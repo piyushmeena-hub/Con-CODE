@@ -41,11 +41,33 @@ from datetime import date, timedelta, datetime
 from typing import Optional
 from io import BytesIO
 
+def add_task():
+    task_text = st.session_state.new_task_input.strip()
+    if task_text:
+        new_id = str(time.time())
+        new_task = {"id": new_id, "text": task_text, "completed": False}
+        st.session_state.tasks.insert(0, new_task)
+        # Send to database
+        requests.post("http://localhost:8000/api/v1/productivity/tasks", json=new_task)
+        st.session_state.new_task_input = ""
+
+def toggle_task(task_id):
+    for t in st.session_state.tasks:
+        if t["id"] == task_id:
+            t["completed"] = not t["completed"]
+            # Tell database to toggle
+            requests.put(f"http://localhost:8000/api/v1/productivity/tasks/{task_id}")
+            break
+
+def delete_task(task_id):
+    st.session_state.tasks = [t for t in st.session_state.tasks if t["id"] != task_id]
+    # Tell database to delete
+    requests.delete(f"http://localhost:8000/api/v1/productivity/tasks/{task_id}")
 # ══════════════════════════════════════════════════════════════════════
 # CONSTANTS
 # ══════════════════════════════════════════════════════════════════════
 
-THRESHOLD = 75.0
+# THRESHOLD is now purely dynamic via st.session_state
 DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 DAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -94,6 +116,38 @@ def init_state():
     # attendance_log: {date_str: {subject: {"status": str, "proof": dict|None}}}
     if "attendance_log" not in st.session_state:
         st.session_state.attendance_log = {}
+        # Fetch historical data from FastAPI on startup
+        try:
+            res = requests.get("http://localhost:8000/api/v1/attendance/")
+            if res.status_code == 200:
+                api_records = res.json()
+                for r in api_records:
+                    date_str = r["date"]
+                    subj = r["subject"]
+                    
+                    # Ensure the date exists in our dictionary
+                    if date_str not in st.session_state.attendance_log:
+                        st.session_state.attendance_log[date_str] = {}
+                        
+                    # Reconstruct the proof dictionary if it exists
+                    proof_data = None
+                    if r.get("proof"):
+                        proof_data = {
+                            "timestamp": r["proof"]["timestamp"].replace("T", " ")[:16],
+                            "lat": r["proof"]["latitude"],
+                            "lon": r["proof"]["longitude"],
+                            "accuracy": r["proof"]["accuracy"],
+                            "address": r["proof"]["address"],
+                            "photo_url": r["proof"]["photo_url"],
+                        }
+                        
+                    # Inject it into Streamlit's memory
+                    st.session_state.attendance_log[date_str][subj] = {
+                        "status": r["status"],
+                        "proof": proof_data
+                    }
+        except Exception as e:
+            print(f"Backend offline or unreachable. Starting with empty logs. Error: {e}")
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     if "uploaded_doc" not in st.session_state:
@@ -110,6 +164,31 @@ def init_state():
         st.session_state.captured_location = None
     if "active_page" not in st.session_state:
         st.session_state.active_page = "🧭 Day View"
+    if "tasks" not in st.session_state:
+        st.session_state.tasks = []
+    if "target_attendance" not in st.session_state:
+        st.session_state.target_attendance = 75.0
+    if "has_warning_email_been_sent" not in st.session_state:
+        st.session_state.has_warning_email_been_sent = False
+# ══════════════════════════════════════════════════════════════════════
+# TODO LOGIC HANDLERS
+# ══════════════════════════════════════════════════════════════════════
+
+def add_task():
+    task_text = st.session_state.new_task_input.strip()
+    if task_text:
+        new_id = str(time.time())
+        st.session_state.tasks.insert(0, {"id": new_id, "text": task_text, "completed": False})
+        st.session_state.new_task_input = ""
+
+def toggle_task(task_id):
+    for t in st.session_state.tasks:
+        if t["id"] == task_id:
+            t["completed"] = not t["completed"]
+            break
+
+def delete_task(task_id):
+    st.session_state.tasks = [t for t in st.session_state.tasks if t["id"] != task_id]
 
 # ══════════════════════════════════════════════════════════════════════
 # HELPERS
@@ -158,12 +237,13 @@ def subject_stats(subject: str) -> dict:
     pct = round(attended / total * 100, 2) if total > 0 else 0.0
     can_miss = 0
     need = 0
+    t = st.session_state.target_attendance
     if total > 0:
-        if pct >= THRESHOLD:
-            can_miss = int((attended - THRESHOLD / 100 * total) / (1 - THRESHOLD / 100))
+        if pct >= t:
+            can_miss = int((attended - t / 100 * total) / (1 - t / 100))
         else:
-            num = (THRESHOLD / 100) * total - attended
-            den = 1 - THRESHOLD / 100
+            num = (t / 100) * total - attended
+            den = 1 - t / 100
             need = max(0, int(num / den) + (1 if den and (num / den) % 1 > 0 else 0))
     return {"total": total, "attended": attended, "missed": missed,
             "off": off_count, "pct": pct, "can_miss": can_miss, "need": need}
@@ -217,6 +297,387 @@ def img_to_b64(img_bytes: bytes) -> str:
 # LOCATION + PHOTO PROOF COMPONENT
 # ══════════════════════════════════════════════════════════════════════
 
+STUDY_TRACKER_HTML = """
+<div class="dashboard">
+    <div class="panel clock-panel">
+        <div class="panel-header">Live Session Clock</div>
+        
+        <div style="margin-bottom: 24px;">
+            <input type="text" id="subject-input" placeholder="What are you focusing on? (e.g. Mathematics)" 
+                   style="width:100%;background:#121212;border:1px solid #374151;color:#F3F4F6;padding:14px;border-radius:8px;font-size:0.95rem;outline:none;" />
+        </div>
+        
+        <div class="clock-container">
+            <svg viewBox="0 0 220 220" width="220" height="220">
+                <g id="ticks"></g>
+                <circle cx="110" cy="110" r="95" fill="none" stroke="#374151" stroke-width="8"></circle>
+                <circle id="progress-circle" cx="110" cy="110" r="95" fill="none" stroke="#06b6d4" stroke-width="8"
+                        stroke-dasharray="596.9" stroke-dashoffset="596.9" stroke-linecap="round" 
+                        transform="rotate(-90 110 110)"></circle>
+                <line id="sweeping-hand" x1="110" y1="110" x2="110" y2="25" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"></line>
+            </svg>
+            <div id="clock-text">00:00:00</div>
+        </div>
+        <div class="controls">
+            <button id="pause-btn" style="background:#f59e0b;">Start Session</button>
+            <button id="stop-btn" style="background:#ef4444;">Stop</button>
+        </div>
+    </div>
+    
+    <div class="panel history-panel">
+        <div class="panel-header">Completed Session Log</div>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Subject</th>
+                        <th>Start</th>
+                        <th>End</th>
+                        <th>Duration</th>
+                    </tr>
+                </thead>
+                <tbody id="history-list">
+                    </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<style>
+    .dashboard {
+        display: grid;
+        grid-template-columns: 350px 1fr;
+        gap: 20px;
+        font-family: 'IBM Plex Sans', sans-serif;
+        color: #F3F4F6;
+    }
+    .panel {
+        background: #1E1E1E;
+        border: 1px solid #374151;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+    }
+    .panel-header {
+        font-size: 1.15rem;
+        font-weight: 700;
+        margin-bottom: 24px;
+        color: #F3F4F6;
+    }
+    .clock-container {
+        position: relative;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        margin-bottom: 28px;
+    }
+    #clock-text {
+        position: absolute;
+        font-size: 1.9rem;
+        font-weight: 700;
+        color: #F3F4F6;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 1px;
+    }
+    /* Smooth Continuous Sweep Animation */
+    #sweeping-hand {
+        transition: transform 1s linear;
+    }
+    #progress-circle {
+        transition: stroke-dashoffset 1s linear;
+    }
+    .controls {
+        display: flex;
+        gap: 12px;
+    }
+    .controls button {
+        flex: 1;
+        border: none;
+        border-radius: 8px;
+        padding: 12px;
+        color: white;
+        font-weight: 700;
+        font-size: 0.95rem;
+        cursor: pointer;
+        transition: filter 0.2s, transform 0.1s;
+    }
+    .controls button:hover {
+        filter: brightness(1.1);
+        transform: translateY(-1px);
+    }
+    .controls button:active {
+        transform: translateY(1px);
+    }
+    
+    .table-container {
+        overflow-y: auto;
+        flex: 1;
+        max-height: 400px;
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: left;
+        font-size: 0.9rem;
+    }
+    th {
+        color: #9CA3AF;
+        font-weight: 600;
+        padding-bottom: 12px;
+        border-bottom: 1px solid #374151;
+    }
+    td {
+        padding: 14px 0;
+        border-bottom: 1px solid #374151;
+        color: #E5E7EB;
+    }
+    tr:hover td {
+        color: #F3F4F6;
+        background: rgba(255,255,255,0.02);
+    }
+    .subject-badge {
+        background: #2563eb;
+        color: white;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+    
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #4B5563; }
+</style>
+
+<script>
+    const ticksGroup = document.getElementById('ticks');
+    for (let i = 0; i < 60; i++) {
+        const angle = (i * 6 * Math.PI) / 180;
+        const isHour = i % 5 === 0;
+        const r1 = isHour ? 82 : 88;
+        const r2 = 91;
+        const x1 = 110 + r1 * Math.sin(angle);
+        const y1 = 110 - r1 * Math.cos(angle);
+        const x2 = 110 + r2 * Math.sin(angle);
+        const y2 = 110 - r2 * Math.cos(angle);
+        
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
+        line.setAttribute('stroke', isHour ? '#9CA3AF' : '#4B5563');
+        line.setAttribute('stroke-width', isHour ? '2' : '1');
+        ticksGroup.appendChild(line);
+    }
+    
+    let isRunning = false;
+    let currentSessionTime = 0;
+    let timer = null;
+    let startTimestamp = null;
+    let sessions = JSON.parse(localStorage.getItem('scholara_history_v2')) || [];
+    
+    let legacyS = JSON.parse(localStorage.getItem('scholara_history'));
+    if (legacyS && sessions.length === 0) {
+        sessions = legacyS.map(s => ({ ...s, subject: s.subject || 'General Focus' }));
+        localStorage.setItem('scholara_history_v2', JSON.stringify(sessions));
+        localStorage.removeItem('scholara_history');
+    }
+    
+    const clockText = document.getElementById('clock-text');
+    const sweepHand = document.getElementById('sweeping-hand');
+    const progressArc = document.getElementById('progress-circle');
+    const historyList = document.getElementById('history-list');
+    const pauseBtn = document.getElementById('pause-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    const subInput = document.getElementById('subject-input');
+    
+    function formatTime(seconds) {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = seconds % 60;
+        const pad = n => n.toString().padStart(2, '0');
+        return `${pad(h)}:${pad(m)}:${pad(s)}`;
+    }
+    
+    function formatDuration(seconds) {
+        if (seconds < 60) return `${seconds}s`;
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        if (h > 0) return `${h}h ${padM(m)}m`;
+        return `${m}m`;
+    }
+    function padM(n) { return n.toString().padStart(2, '0'); }
+    
+    function renderHistory() {
+        historyList.innerHTML = '';
+        if (sessions.length === 0) {
+            historyList.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#6B7280; padding: 40px;">No study sessions tracked yet. Enter a subject and hit Start!</td></tr>';
+            return;
+        }
+        
+        [...sessions].reverse().slice(0, 10).forEach(s => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${s.date}</td>
+                <td><span class="subject-badge">${s.subject || '—'}</span></td>
+                <td>${s.start}</td>
+                <td>${s.end}</td>
+                <td><strong>${s.duration}</strong></td>
+            `;
+            historyList.appendChild(tr);
+        });
+    }
+    
+    function updateVisuals() {
+        clockText.innerText = formatTime(currentSessionTime);
+        
+        let deg = currentSessionTime * 6; 
+        sweepHand.setAttribute('transform', `rotate(${deg} 110 110)`);
+        
+        let fraction = (currentSessionTime % 3600) / 3600;
+        let offset = 596.90 - (fraction * 596.90);
+        progressArc.setAttribute('stroke-dashoffset', offset);
+    }
+    
+    function startTimer() {
+        if (!isRunning) {
+            if (currentSessionTime === 0) startTimestamp = new Date();
+            isRunning = true;
+            pauseBtn.innerText = 'Pause';
+            pauseBtn.style.background = '#f59e0b';
+            subInput.disabled = true;
+            timer = setInterval(() => { currentSessionTime++; updateVisuals(); }, 1000);
+        } else {
+            isRunning = false;
+            clearInterval(timer);
+            pauseBtn.innerText = 'Resume';
+            pauseBtn.style.background = '#2563eb';
+        }
+    }
+    
+    function stopTimer() {
+        if (currentSessionTime === 0 && !isRunning) return; 
+        
+        isRunning = false;
+        clearInterval(timer);
+        
+        const endDate = new Date();
+        const startStr = startTimestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        const endStr = endDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        const dateTokens = endDate.toDateString().split(' ');
+        const dateStr = `${dateTokens[2]} ${dateTokens[1]}`;
+        const subjStr = subInput.value.trim() || 'General Focus';
+        
+        sessions.push({ date: dateStr, subject: subjStr, start: startStr, end: endStr, duration: formatDuration(currentSessionTime) });
+        localStorage.setItem('scholara_history_v2', JSON.stringify(sessions));
+        
+        // --- NEW: SEND TO BACKEND ---
+        fetch('http://localhost:8000/api/v1/productivity/session', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                date: dateStr,
+                subject: subjStr,
+                start_time: startStr,
+                end_time: endStr,
+                duration: formatDuration(currentSessionTime)
+            })
+        });
+        // ----------------------------
+        
+        currentSessionTime = 0;
+        startTimestamp = null;
+        subInput.disabled = false;
+        subInput.value = '';
+        pauseBtn.innerText = 'Start Session';
+        pauseBtn.style.background = '#2563eb';
+        
+        sweepHand.style.transition = 'none';
+        progressArc.style.transition = 'none';
+        updateVisuals();
+        
+        setTimeout(() => {
+            sweepHand.style.transition = 'transform 1s linear';
+            progressArc.style.transition = 'stroke-dashoffset 1s linear';
+        }, 50);
+        
+        renderHistory();
+    }
+    
+    pauseBtn.addEventListener('click', startTimer);
+    stopBtn.addEventListener('click', stopTimer);
+    
+    updateVisuals();
+    renderHistory();
+</script>
+"""
+
+def render_study_tracker():
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    import streamlit.components.v1 as components
+    components.html(STUDY_TRACKER_HTML, height=600)
+
+def render_todo_widget():
+    st.markdown("""
+        <style>
+        .todo-header { font-size:1.15rem; font-weight:700; color:#F3F4F6; margin-bottom:16px; margin-top:0px; display:flex; align-items:center; gap:8px; }
+        .task-empty { text-align:center; color:#6B7280; font-size:0.9rem; padding: 30px 10px; }
+        .task-text { color: #E5E7EB; font-size: 0.95rem; margin-top: 4px; }
+        .task-text.completed { text-decoration: line-through; color: #6B7280; }
+        /* Target generic input fields explicitly */
+        div[data-testid="stTextInput"] input { padding: 12px 14px!important; font-size: 0.9rem!important; }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("<h3 class='todo-header'>📋 To-Do List</h3>", unsafe_allow_html=True)
+    
+    # Input Layout
+    c1, c2 = st.columns([7, 3])
+    with c1:
+        st.text_input("New Task", key="new_task_input", label_visibility="collapsed", placeholder="What needs to be done?", on_change=add_task)
+    with c2:
+        st.button("Add", on_click=add_task, use_container_width=True, type="primary")
+        
+    st.markdown("<hr style='margin: 10px 0; border-color: #374151;'>", unsafe_allow_html=True)
+    
+    # Task List
+    if not st.session_state.tasks:
+        st.markdown("<div class='task-empty'>✅ All caught up! Add a new goal to begin.</div>", unsafe_allow_html=True)
+    else:
+        for task in st.session_state.tasks:
+            tcols = st.columns([1, 8, 2], vertical_alignment="center")
+            with tcols[0]:
+                st.checkbox("", value=task["completed"], key=f"chk_{task['id']}", on_change=toggle_task, args=(task["id"],), label_visibility="collapsed")
+            with tcols[1]:
+                cls = "task-text completed" if task["completed"] else "task-text"
+                st.markdown(f"<div class='{cls}'>{task['text']}</div>", unsafe_allow_html=True)
+            with tcols[2]:
+                st.button("🗑️", key=f"del_{task['id']}", on_click=delete_task, args=(task["id"],), use_container_width=True)
+
+def page_focus_time():
+    st.markdown("""<h2 style='font-family:Georgia,serif;color:#F3F4F6;margin-bottom:.5rem;'>
+        🎯 Focus Time</h2>
+        <p style='color:#9CA3AF;font-size:.9rem;margin-top:0;'>
+        A distraction-free environment to log deep work sessions.</p>
+    """, unsafe_allow_html=True)
+    st.divider()
+    
+    # Grid Layout: 2/3 Clock, 1/3 Task Manager
+    left_col, right_col = st.columns([2, 1])
+    
+    with left_col:
+        render_study_tracker()
+        
+    with right_col:
+        render_todo_widget()
+
+
 LOCATION_JS = """
 <div id="loc-status" style="font-family:monospace;font-size:13px;color:#9CA3AF;
      padding:8px 0;">Requesting location…</div>
@@ -260,7 +721,7 @@ def render_proof_card(proof: dict, subject: str):
     lat = proof.get("lat")
     lon = proof.get("lon")
     address = proof.get("address", "")
-    photo_b64 = proof.get("photo_b64")
+    photo_url = proof.get("photo_url") # Fetching the URL instead of base64
     acc = proof.get("accuracy", "")
 
     with st.container():
@@ -294,12 +755,12 @@ def render_proof_card(proof: dict, subject: str):
             unsafe_allow_html=True,
         )
 
-        if photo_b64:
+        if photo_url:
             st.markdown(
                 f"""
                 <div style='margin-top:10px;border-radius:10px;overflow:hidden;
                             border:1px solid #374151;box-shadow:0 4px 6px rgba(0,0,0,0.3);'>
-                    <img src='data:image/jpeg;base64,{photo_b64}'
+                    <img src='{photo_url}'
                          style='width:100%;max-height:200px;object-fit:cover;display:block;'/>
                     <div style='background:#1E1E1E;padding:4px 10px;
                                 font-size:.7rem;color:#9CA3AF;text-align:right;'>
@@ -309,6 +770,8 @@ def render_proof_card(proof: dict, subject: str):
                 """,
                 unsafe_allow_html=True,
             )
+
+
 
 # ══════════════════════════════════════════════════════════════════════
 # VERIFIED MARK ATTENDANCE DIALOG (STRICT MODE)
@@ -408,18 +871,44 @@ def render_verified_mark_section(d: date, subject: str):
             type="primary",
             disabled=not can_confirm,
         ):
-            proof = {
-                "timestamp": datetime.now().strftime("%d %b %Y, %I:%M %p"),
-                "lat": stored_loc["lat"],
-                "lon": stored_loc["lon"],
-                "accuracy": stored_loc["accuracy"],
-                "address": stored_loc["address"],
-                "photo_b64": photo_b64,
-            }
-            set_record(d, subject, ATT, proof)
-            if stored_loc_key in st.session_state:
-                del st.session_state[stored_loc_key]
-            st.rerun()
+            with st.spinner("Encrypting & Uploading to Backend..."):
+                # 1. Prepare the exact format FastAPI expects
+                files = {
+                    "photo": (photo_file.name, photo_file.getvalue(), photo_file.type)
+                }
+                data = {
+                    "subject": subject,
+                    "date": d.isoformat(),
+                    "latitude": stored_loc["lat"],
+                    "longitude": stored_loc["lon"],
+                    "accuracy": stored_loc["accuracy"],
+                    "address": stored_loc["address"]
+                }
+                
+                # 2. Hit the FastAPI endpoint
+                try:
+                    res = requests.post("http://localhost:8000/api/v1/attendance/mark", data=data, files=files)
+                    res.raise_for_status() # Check for 400/500 errors
+                    api_result = res.json()
+                    
+                    # 3. Update local UI state with the Database response
+                    proof = {
+                        "timestamp": api_result["proof"]["timestamp"].replace("T", " ")[:16], # Clean up ISO format
+                        "lat": api_result["proof"]["latitude"],
+                        "lon": api_result["proof"]["longitude"],
+                        "accuracy": api_result["proof"]["accuracy"],
+                        "address": api_result["proof"]["address"],
+                        "photo_url": api_result["proof"]["photo_url"], # Using URL now instead of heavy base64
+                    }
+                    
+                    set_record(d, subject, ATT, proof)
+                    
+                    if stored_loc_key in st.session_state:
+                        del st.session_state[stored_loc_key]
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"🚨 API Connection Failed: Make sure your FastAPI server is running! Error: {e}")
 
 # ══════════════════════════════════════════════════════════════════════
 # PAGE: DAY VIEW
@@ -481,7 +970,7 @@ def page_day_view():
         has_proof = record["proof"] is not None
         stats = subject_stats(subject)
 
-        pct_color = "#22c55e" if stats["pct"] >= THRESHOLD else "#ef4444"
+        pct_color = "#22c55e" if stats["pct"] >= st.session_state.target_attendance else "#ef4444"
         pct_display = f"{stats['pct']:.2f}" if stats["total"] > 0 else "—"
 
         proof_badge = (
@@ -499,7 +988,7 @@ def page_day_view():
                         <div style='font-size:1.25rem;font-weight:800;color:{pct_color};
                                     font-family:Georgia,serif;'>{pct_display}</div>
                         <div style='font-size:.65rem;color:#9CA3AF;border-top:1px solid #374151;
-                                    padding-top:2px;'>{THRESHOLD:.0f}</div>
+                                    padding-top:2px;'>{st.session_state.target_attendance:.0f}</div>
                     </div>
                     <div style='flex:1;'>
                         <div style='font-weight:700;font-size:.95rem;color:#F3F4F6;'>
@@ -508,7 +997,7 @@ def page_day_view():
                         <div style='font-size:.76rem;color:#9CA3AF;margin-top:3px;'>
                             {stats["attended"]}/{stats["total"]} attended ·
                             {"can miss <b style='color:#22c55e;'>" + str(stats["can_miss"]) + "</b> more"
-                              if stats["pct"] >= THRESHOLD else
+                              if stats["pct"] >= st.session_state.target_attendance else
                               "need <b style='color:#ef4444;'>" + str(stats["need"]) + "</b> to recover"}
                         </div>
                     </div>
@@ -614,9 +1103,34 @@ def page_timetable():
 # PAGE: SUBJECTS
 # ══════════════════════════════════════════════════════════════════════
 
+def trigger_low_attendance_email(user_email, current_pct, target_pct):
+    if not st.session_state.has_warning_email_been_sent:
+        print(f"[MOCK SMTP] Dispatching WARNING email to {user_email}: Attendance {current_pct:.2f}% is below target {target_pct:.0f}%!")
+        st.session_state.has_warning_email_been_sent = True
+
 def page_subjects():
+    st.markdown("<h4 style='color:#F3F4F6;'>⚙️ Tracking Goal</h4>", unsafe_allow_html=True)
+    new_target = st.slider("Set Minimum Attendance Goal (%)", min_value=1.0, max_value=100.0, value=float(st.session_state.target_attendance), step=1.0)
+    
+    if new_target != st.session_state.target_attendance:
+        st.session_state.target_attendance = new_target
+        # Reset email flag so if they drop below the *new* target, they get warned again:
+        st.session_state.has_warning_email_been_sent = False
+        st.rerun()
+
     overall = overall_stats()
-    ov_color = "#22c55e" if overall["pct"] >= THRESHOLD else "#ef4444"
+    
+    # ── Automated Warning System ──
+    if overall["total"] > 0 and overall["pct"] < st.session_state.target_attendance:
+        st.markdown(f"""
+        <div style='background:rgba(239, 68, 68, 0.15); border:1px solid #ef4444; border-radius:8px; padding:12px; margin-bottom:16px; color:#fca5a5; font-size:0.95rem; display:flex; align-items:center; gap:10px;'>
+            <span style='font-size:1.2rem;'>🚨</span>
+            <b>Warning:</b> Your overall attendance ({overall['pct']:.2f}%) has fallen below your target of {st.session_state.target_attendance:.0f}%.
+        </div>
+        """, unsafe_allow_html=True)
+        trigger_low_attendance_email("student@scholara.edu", overall['pct'], st.session_state.target_attendance)
+
+    ov_color = "#22c55e" if overall["pct"] >= st.session_state.target_attendance else "#ef4444"
 
     st.markdown(
         f"""
@@ -632,7 +1146,7 @@ def page_subjects():
                     {overall["missed"]} missed · {overall["off"]} off
                 </div>
             </div>
-            <div style='font-size:3rem;'>{"🎓" if overall["pct"] >= THRESHOLD else "⚠️"}</div>
+            <div style='font-size:3rem;'>{"🎓" if overall["pct"] >= st.session_state.target_attendance else "⚠️"}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -649,7 +1163,7 @@ def page_subjects():
 
     for subject in subjects_sorted:
         s = subject_stats(subject)
-        pct_color = "#22c55e" if s["pct"] >= THRESHOLD else "#ef4444"
+        pct_color = "#22c55e" if s["pct"] >= st.session_state.target_attendance else "#ef4444"
 
         proof_count = sum(
             1 for day_data in st.session_state.attendance_log.values()
@@ -676,7 +1190,7 @@ def page_subjects():
                     <div style='text-align:right;'>
                         <div style='font-size:1.5rem;font-weight:800;color:{pct_color};
                                     font-family:Georgia,serif;'>{s["pct"]:.2f}%</div>
-                        <div style='font-size:.72rem;color:#9CA3AF;'>req. {THRESHOLD:.0f}%</div>
+                        <div style='font-size:.72rem;color:#9CA3AF;'>req. {st.session_state.target_attendance:.0f}%</div>
                     </div>
                 </div>
             </div>
@@ -684,10 +1198,10 @@ def page_subjects():
             unsafe_allow_html=True,
         )
         st.progress(min(s["pct"] / 100, 1.0))
-        if s["pct"] >= THRESHOLD:
+        if s["pct"] >= st.session_state.target_attendance:
             st.success(f"✅ Safe! Can miss **{s['can_miss']}** more lecture(s).")
         else:
-            st.error(f"🚨 **{round(THRESHOLD - s['pct'], 2)}% below threshold.** Attend next **{s['need']}** class(es) to recover.")
+            st.error(f"🚨 **{round(st.session_state.target_attendance - s['pct'], 2)}% below target.** Attend next **{s['need']}** class(es) to recover.")
         st.markdown("")
 
 # ══════════════════════════════════════════════════════════════════════
@@ -781,7 +1295,7 @@ def page_calendar():
             if rec["proof"]: proof_count += 1
 
     month_pct = round(month_att / month_total * 100, 2) if month_total > 0 else 0.0
-    pct_color = "#22c55e" if month_pct >= THRESHOLD else "#ef4444"
+    pct_color = "#22c55e" if month_pct >= st.session_state.target_attendance else "#ef4444"
 
     sc1, sc2, sc3, sc4, sc5, sc6 = st.columns(6)
     for col, val, label, color in [
@@ -812,7 +1326,6 @@ def page_calendar():
             f"<div style='text-align:center;background:#1E1E1E;border-radius:10px;"
             f"padding:10px 4px;border:1px solid #374151;box-shadow:0 4px 6px rgba(0,0,0,0.3);'>"
             f"<div style='font-size:1.3rem;font-weight:800;color:{color};'>{val}</div>"
-            f"<div style='font-size:.65rem;color:#9CA3AF;margin-top:2px;'>{label}</div>"
             f"</div>", unsafe_allow_html=True,
         )
 
@@ -906,7 +1419,7 @@ def page_study_assistant():
 def render_sidebar() -> str:
     with st.sidebar:
         overall = overall_stats()
-        ov_color = "#22c55e" if overall["pct"] >= THRESHOLD else "#ef4444"
+        ov_color = "#22c55e" if overall["pct"] >= st.session_state.target_attendance else "#ef4444"
         st.markdown(
             f"""<div style='text-align:center;padding:1rem 0 .5rem;'>
                 <div style='font-size:2.2rem;'>🎓</div>
@@ -920,7 +1433,7 @@ def render_sidebar() -> str:
                     <span style='color:{ov_color};font-weight:800;font-size:1.1rem;'>
                         {overall["pct"]:.2f}%
                     </span>
-                    <span style='color:#9CA3AF;font-size:.75rem;'> | {THRESHOLD:.0f}%</span>
+                    <span style='color:#9CA3AF;font-size:.75rem;'> | {st.session_state.target_attendance:.0f}%</span>
                 </div>
             </div>""",
             unsafe_allow_html=True,
@@ -928,7 +1441,7 @@ def render_sidebar() -> str:
         st.divider()
         page = st.radio(
             "Navigate",
-            ["🧭 Day View", "⏳ Timetable", "📆 Calendar", "📈 Subjects", "🧠 Study Assistant"],
+            ["🧭 Day View", "⏳ Timetable", "📆 Calendar", "📈 Subjects", "🎯 Focus Time", "🧠 Study Assistant"],
             label_visibility="collapsed",
             key="active_page",
         )
@@ -979,13 +1492,34 @@ def main():
         @import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;700&family=IBM+Plex+Sans:wght@300;400;600&display=swap');
         html, body, [class*="css"] { font-family:'IBM Plex Sans',sans-serif; background:#121212; color:#F3F4F6; }
         .stApp { background-color:#121212; }
-        [data-testid="stSidebar"] { background:#1E1E1E; border-right:1px solid #374151; }
-        .stButton>button { border-radius:8px;font-weight:600;font-size:.82rem;border:1px solid #cbd5e1;box-shadow:0 4px 6px rgba(0,0,0,0.3);background:#1E1E1E;color:#E5E7EB;transition:all .2s; }
-        .stButton>button:hover { background:#374151;color:#F3F4F6;border-color:#94a3b8; }
+        [data-testid="stSidebar"] { 
+            background:#1E1E1E; 
+            border-right:1px solid #374151; 
+            transition: all 0.4s cubic-bezier(0.25, 1, 0.5, 1) !important;
+        }
+        
+        /* Global Button Micro-interactions (Attendance Marker "Pop") */
+        .stButton>button { 
+            border-radius:8px;font-weight:600;font-size:.82rem;border:1px solid #cbd5e1;
+            box-shadow:0 4px 6px rgba(0,0,0,0.3);background:#1E1E1E;color:#E5E7EB;
+            transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) !important; 
+        }
+        .stButton>button:hover { 
+            background:#374151;color:#F3F4F6;border-color:#94a3b8; 
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.4);
+        }
+        .stButton>button:active {
+            transform: scale(0.94) translateY(2px) !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3) !important;
+            transition: all 0.1s !important;
+        }
+        
         button[kind="primary"] { background:#2563eb!important;color:white!important;border-color:#2563eb!important; }
         .stTextInput input,.stNumberInput input,.stDateInput input { background:#1E1E1E!important;border:1px solid #cbd5e1!important;color:#F3F4F6!important;border-radius:8px!important; }
-        [data-testid="stProgressBar"]>div>div { background:linear-gradient(90deg,#2563eb,#22c55e)!important; }
-        [data-testid="stExpander"] { background:#1E1E1E;border:1px solid #374151;box-shadow:0 2px 4px rgba(0,0,0,0.02);border-radius:10px; }
+        [data-testid="stProgressBar"]>div>div { background:linear-gradient(90deg,#2563eb,#22c55e)!important; transition: width 0.4s ease; }
+        [data-testid="stExpander"] { background:#1E1E1E;border:1px solid #374151;box-shadow:0 2px 4px rgba(0,0,0,0.02);border-radius:10px; transition: all 0.2s ease; }
+        [data-testid="stExpander"]:hover { border-color: #4B5563; }
         [data-testid="stChatMessage"] { background:#1E1E1E;border-radius:12px;border:1px solid #374151;box-shadow:0 4px 6px rgba(0,0,0,0.3);margin-bottom:.5rem; }
         [data-baseweb="tab"] { color:#9CA3AF!important;font-weight:600; }
         [data-baseweb="tab"][aria-selected="true"] { color:#0284c7!important; }
@@ -993,25 +1527,54 @@ def main():
         hr { border-color:#374151!important; }
         .main .block-container { padding-top:1.5rem;max-width:960px; }
         
-        /* Sidebar Navigation Typography Upgrade */
+        /* Smooth Upload Dropzone */
+        [data-testid="stFileUploadDropzone"] {
+            transition: all 0.3s ease-in-out !important;
+        }
+        [data-testid="stFileUploadDropzone"]:hover {
+            border-color: #38bdf8 !important;
+            background-color: rgba(56, 189, 248, 0.05) !important;
+        }
+        [data-testid="stFileUploadDropzone"]:active {
+            transform: scale(0.98);
+        }
+
+        /* Route fade-in animation on navigation */
+        @keyframes fadeInSlide {
+            0% { opacity: 0; transform: translateY(10px); }
+            100% { opacity: 1; transform: translateY(0); }
+        }
+        [data-testid="stAppViewBlockContainer"] {
+            animation: fadeInSlide 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+        }
+
+        /* Sidebar Navigation Typography & Animation Upgrade */
         div[data-testid="stSidebar"] div[role="radiogroup"] > label {
             padding: 12px 10px !important;
             cursor: pointer;
-            transition: all 0.2s ease;
+            transition: background 0.2s ease, transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
         }
         div[data-testid="stSidebar"] div[role="radiogroup"] > label p {
             font-size: 1.25rem !important;
             font-weight: 600 !important;
             color: #E5E7EB !important;
+            transition: opacity 0.2s ease;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: clip;
         }
         div[data-testid="stSidebar"] div[role="radiogroup"] > label:hover {
             background: #374151;
             border-radius: 8px;
             color: #F3F4F6 !important;
+            transform: translateX(4px);
+        }
+        div[data-testid="stSidebar"] div[role="radiogroup"] > label:active {
+            transform: scale(0.97) translateX(0) !important;
         }
 
-        /* Profile Component Top Right */
-        .scholara-profile-container {
+        /* Profile Component Top Right - Click Instead of Hover */
+        details.scholara-profile-container {
             position: fixed;
             top: 14px;
             right: 80px; 
@@ -1019,7 +1582,7 @@ def main():
             font-family: inherit;
         }
         
-        .scholara-avatar {
+        details.scholara-profile-container summary {
             width: 36px;
             height: 36px;
             background: #2563eb;
@@ -1034,14 +1597,20 @@ def main():
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             border: 2px solid white;
             transition: background 0.2s;
+            list-style: none; /* Hide default arrow */
+            outline: none;
         }
 
-        .scholara-avatar:hover {
+        /* Hide the triangle in webkit browsers */
+        details.scholara-profile-container summary::-webkit-details-marker {
+            display: none;
+        }
+
+        details.scholara-profile-container summary:hover {
             background: #1d4ed8;
         }
 
         .scholara-dropdown {
-            display: none;
             position: absolute;
             top: 46px;
             right: 0;
@@ -1054,10 +1623,7 @@ def main():
             color: #F3F4F6;
             text-align: left;
             cursor: default;
-        }
-
-        .scholara-profile-container:hover .scholara-dropdown {
-            display: block;
+            /* Dropdown is displayed automatically when <details> is open */
         }
 
         .profile-name {
@@ -1105,8 +1671,8 @@ def main():
         }
         </style>
         
-        <div class="scholara-profile-container">
-            <div class="scholara-avatar">SA</div>
+        <details class="scholara-profile-container">
+            <summary>SA</summary>
             <div class="scholara-dropdown">
                 <div class="profile-name">Student Name</div>
                 <div class="profile-role">Computer Science</div>
@@ -1118,7 +1684,7 @@ def main():
                     <span>⚙️</span> Manage Account
                 </div>
             </div>
-        </div>
+        </details>
     """, unsafe_allow_html=True)
 
     init_state()
@@ -1128,6 +1694,7 @@ def main():
     elif page == "⏳ Timetable":       page_timetable()
     elif page == "📆 Calendar":        page_calendar()
     elif page == "📈 Subjects":        page_subjects()
+    elif page == "🎯 Focus Time":       page_focus_time()
     elif page == "🧠 Study Assistant": page_study_assistant()
 
 if __name__ == "__main__":

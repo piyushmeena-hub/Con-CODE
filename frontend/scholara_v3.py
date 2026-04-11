@@ -1,3 +1,17 @@
+import os
+import streamlit as st
+# ... other standard imports like time, calendar, etc.
+
+from langchain_groq import ChatGroq 
+from langchain_community.embeddings import HuggingFaceEmbeddings 
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+
+try:
+    from langchain.chains import RetrievalQA
+except ImportError:
+    from langchain_community.chains import RetrievalQA
 """
 ╔══════════════════════════════════════════════════════════════════════╗
 ║         SCHOLARA v3 — Location + Photo Proof Attendance              ║
@@ -24,7 +38,7 @@ import base64
 import json
 import requests
 from datetime import date, timedelta, datetime
-from typing import Generator
+from typing import Optional
 from io import BytesIO
 
 # ══════════════════════════════════════════════════════════════════════
@@ -82,8 +96,6 @@ def init_state():
         st.session_state.attendance_log = {}
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
-    if "source_snippets" not in st.session_state:
-        st.session_state.source_snippets = []
     if "uploaded_doc" not in st.session_state:
         st.session_state.uploaded_doc = {"loaded": False, "filename": None}
     if "viewed_date" not in st.session_state:
@@ -808,68 +820,84 @@ def page_calendar():
 # PAGE: STUDY ASSISTANT
 # ══════════════════════════════════════════════════════════════════════
 
-def mock_llm_stream(prompt: str) -> Generator[str, None, None]:
-    response = (
-        f"Great question about '{prompt[:55]}{'...' if len(prompt)>55 else ''}'! "
-        "Based on your uploaded study material, the retrieved excerpt explains this "
-        "concept clearly. The key idea is foundational and will help with both "
-        "theory and numerical problems in your exams. Review the source snippet "
-        "below for context, and cross-reference with your lecture notes. "
-        "Ask me to elaborate on any specific part! 📚"
-    )
-    for word in response.split():
-        yield word + " "
-        time.sleep(0.035)
+# ── Real RAG Logic ──────────────────────────────────────────────────
+
+@st.cache_resource
+def get_embeddings():
+    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+def process_pdf_real(uploaded_file):
+    with open("temp.pdf", "wb") as f:
+        f.write(uploaded_file.getvalue())
+    loader = PyPDFLoader("temp.pdf")
+    pages = loader.load()
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    docs = splitter.split_documents(pages)
+    vector_db = FAISS.from_documents(docs, get_embeddings())
+    return vector_db
 
 def page_study_assistant():
-    st.markdown("""<h2 style='font-family:Georgia,serif;color:#F3F4F6;margin-bottom:.25rem;'>
-        🤖 AI Study Assistant</h2>
+    st.markdown("""
+        <h2 style='font-family:Georgia,serif;color:#F3F4F6;margin-bottom:.25rem;'>
+            � AI Study Assistant (Live RAG)
+        </h2>
         <p style='color:#9CA3AF;font-size:.9rem;margin-top:0;'>
-        Upload your PDF (sidebar) and ask questions grounded in your notes.</p>
+            Powered by Groq Llama 3 &amp; Local Embeddings.
+        </p>
     """, unsafe_allow_html=True)
+
+    # API Key Check
+    api_key = st.session_state.get("groq_api_key", "")
+    if not api_key:
+        st.warning("⚠️ Please enter your Groq API Key in the sidebar to begin.")
+        return
+
     doc = st.session_state.uploaded_doc
     if doc["loaded"]:
-        st.info(f"📖 **Active:** `{doc['filename']}` — Ready!")
+        # Process PDF into FAISS if not done yet
+        if "vector_db" not in st.session_state:
+            with st.spinner("Analyzing PDF locally..."):
+                st.session_state.vector_db = process_pdf_real(st.session_state.raw_file)
+            st.success("✅ PDF Indexed!")
+        st.info(f"📖 **Active Knowledge Base:** `{doc['filename']}`")
     else:
-        st.warning("⬅️ Upload a PDF in the sidebar to enable document-grounded answers.")
-    st.divider()
-    if not st.session_state.chat_history:
-        with st.chat_message("assistant", avatar="🎓"):
-            st.markdown("**Hello!** Upload your PDF and ask study questions.\n\n_e.g. 'Explain Newton's laws'_")
-    assistant_idx = 0
+        st.warning("⬅️ Upload a lecture PDF in the sidebar to enable RAG.")
+
+    # Chat UI
     for msg in st.session_state.chat_history:
-        if msg["role"] == "user":
-            with st.chat_message("user", avatar="👤"):
-                st.markdown(msg["content"])
-        else:
-            with st.chat_message("assistant", avatar="🎓"):
-                st.markdown(msg["content"])
-                if assistant_idx < len(st.session_state.source_snippets):
-                    snippet = st.session_state.source_snippets[assistant_idx]
-                    if snippet:
-                        with st.expander("📄 Source Snippet"):
-                            st.markdown(f"**Page {snippet['page']}** — `{doc.get('filename','doc.pdf')}`")
-                            st.markdown(f"> _{snippet['snippet']}_")
-                assistant_idx += 1
-    query = st.chat_input("Ask about your study material…")
-    if query:
+        with st.chat_message(msg["role"], avatar="👤" if msg["role"] == "user" else "🎓"):
+            st.markdown(msg["content"])
+
+    query = st.chat_input("Ask about your notes...")
+    if query and doc["loaded"]:
         st.session_state.chat_history.append({"role": "user", "content": query})
         with st.chat_message("user", avatar="👤"):
             st.markdown(query)
-        snippet = random.choice(MOCK_SNIPPETS) if doc["loaded"] else None
+
         with st.chat_message("assistant", avatar="🎓"):
-            response = st.write_stream(mock_llm_stream(query))
-            if snippet:
-                with st.expander("📄 Source Snippet"):
-                    st.markdown(f"**Page {snippet['page']}** — `{doc['filename']}`")
-                    st.markdown(f"> _{snippet['snippet']}_")
+            with st.spinner("Thinking..."):
+                os.environ["GROQ_API_KEY"] = api_key
+                llm = ChatGroq(model_name="llama-3.1-8b-instant", temperature=0)
+                qa_chain = RetrievalQA.from_chain_type(
+                    llm=llm,
+                    chain_type="stuff",
+                    retriever=st.session_state.vector_db.as_retriever(),
+                    return_source_documents=True,
+                )
+                result = qa_chain.invoke({"query": query})
+                response = result["result"]
+                st.markdown(response)
+
+                with st.expander("📄 View Source Context"):
+                    for i, source in enumerate(result["source_documents"][:2]):
+                        st.caption(f"Snippet {i+1} (Page {source.metadata.get('page', 'Unknown')})")
+                        st.write(source.page_content[:300] + "...")
+
         st.session_state.chat_history.append({"role": "assistant", "content": response})
-        st.session_state.source_snippets.append(snippet)
-    if st.session_state.chat_history:
-        if st.button("🗑️ Clear Chat"):
-            st.session_state.chat_history = []
-            st.session_state.source_snippets = []
-            st.rerun()
+
+    if st.button("🗑️ Clear Chat"):
+        st.session_state.chat_history = []
+        st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════
 # SIDEBAR
@@ -905,17 +933,27 @@ def render_sidebar() -> str:
             key="active_page",
         )
         st.divider()
+        st.markdown("### ⚙️ LLM Config")
+        st.text_input("Groq API Key", type="password", placeholder="gsk_...", key="groq_api_key")
+        st.divider()
         st.markdown("### 📂 Study Materials")
         uploaded_file = st.file_uploader("Upload PDF", type=["pdf"], label_visibility="collapsed")
         if uploaded_file:
-            if not st.session_state.uploaded_doc["loaded"] or \
-               st.session_state.uploaded_doc["filename"] != uploaded_file.name:
-                with st.spinner("Indexing…"):
-                    time.sleep(0.8)
+            # Check if it's a new file
+            if st.session_state.uploaded_doc["filename"] != uploaded_file.name:
                 st.session_state.uploaded_doc = {"loaded": True, "filename": uploaded_file.name}
+                st.session_state.raw_file = uploaded_file  # Store for the RAG processor
+                # Clear old vector DB if new file is uploaded
+                if "vector_db" in st.session_state:
+                    del st.session_state.vector_db
+                st.rerun()
             st.success(f"✅ {uploaded_file.name}")
             if st.button("🗑️ Remove", use_container_width=True):
                 st.session_state.uploaded_doc = {"loaded": False, "filename": None}
+                if "vector_db" in st.session_state:
+                    del st.session_state.vector_db
+                if "raw_file" in st.session_state:
+                    del st.session_state.raw_file
                 st.rerun()
         else:
             if st.session_state.uploaded_doc["loaded"]:

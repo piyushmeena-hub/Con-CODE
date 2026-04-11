@@ -27,6 +27,15 @@ class Timetable(Base):
     course = Column(String)
     room = Column(String)
 
+class Faculty(Base):
+    __tablename__ = "faculty"
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    dept = Column(String)
+    fac_id = Column(String)
+    email = Column(String)
+    phone = Column(String)
+
 Base.metadata.create_all(bind=engine)
 
 # --- SCHEMAS ---
@@ -48,12 +57,19 @@ def seed_data():
             Timetable(day="Monday", time_slot="09:00-10:00", course="Machine Learning", room="Lab 201"),
             Timetable(day="Tuesday", time_slot="10:00-11:00", course="Data Structures", room="Room 104")
         ])
+        db.add_all([
+            Faculty(name="Dr. Smith", dept="COMPUTER SCIENCE", fac_id="2024CS001", email="dr.smith@scholara.edu", phone="+91 9876543210")
+        ])
         db.commit()
     db.close()
 
 seed_data()
 
 # --- ENDPOINTS ---
+
+@app.get("/api/v1/faculty/me")
+def get_faculty_profile(db: Session = Depends(lambda: SessionLocal())):
+    return db.query(Faculty).first()
 
 @app.get("/api/v1/faculty/me/dashboard")
 def get_dashboard(db: Session = Depends(lambda: SessionLocal())):

@@ -1,0 +1,52 @@
+# 🔥 Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 🔥 Virtual environments (VERY IMPORTANT)
+
+env/
+.venv/
+backend/Lib/
+backend/Scripts/
+backend/Include/
+backend/share/
+backend/pyvenv.cfg
+backend/etc/
+
+# 🔥 VS Code
+.vscode/
+
+# 🔥 Environment variables
+.env
+.env.*
+
+# 🔥 Logs
+*.log
+
+# 🔥 Database files (optional)
+*.db
+*.sqlite3
+
+# 🔥 OS files
+.DS_Store
+Thumbs.db
+
+# 🔥 Build / dist
+build/
+dist/
+*.egg-info/
+
+# 🔥 Temporary files
+*.tmp
+*.pdf
+
+# 🔥 Node (if you add frontend frameworks later)
+node_modules/
+
+# 🔥 Testing / coverage
+.coverage
+htmlcov/
+
+# 🔥 Jupyter
+.ipynb_checkpoints/

@@ -205,6 +205,298 @@ def img_to_b64(img_bytes: bytes) -> str:
 # LOCATION + PHOTO PROOF COMPONENT
 # ══════════════════════════════════════════════════════════════════════
 
+STUDY_TRACKER_HTML = """
+<div class="dashboard-header">Study Session Dashboard</div>
+<div class="dashboard">
+    <div class="panel clock-panel">
+        <div class="panel-header">Live Session Clock</div>
+        <div class="clock-container">
+            <svg viewBox="0 0 220 220" width="220" height="220">
+                <g id="ticks"></g>
+                <circle cx="110" cy="110" r="95" fill="none" stroke="#374151" stroke-width="8"></circle>
+                <circle id="progress-circle" cx="110" cy="110" r="95" fill="none" stroke="#06b6d4" stroke-width="8"
+                        stroke-dasharray="596.9" stroke-dashoffset="596.9" stroke-linecap="round" 
+                        transform="rotate(-90 110 110)"></circle>
+                <line id="sweeping-hand" x1="110" y1="110" x2="110" y2="25" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"></line>
+            </svg>
+            <div id="clock-text">00:00:00</div>
+        </div>
+        <div class="controls">
+            <button id="pause-btn" style="background:#f59e0b;">Start</button>
+            <button id="stop-btn" style="background:#ef4444;">Stop Session</button>
+        </div>
+    </div>
+    
+    <div class="panel history-panel">
+        <div class="panel-header">Completed Session Log</div>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Start</th>
+                        <th>End</th>
+                        <th>Duration</th>
+                        <th style="text-align:center;">Status</th>
+                    </tr>
+                </thead>
+                <tbody id="history-list">
+                    <!-- Dynamic Rows -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<style>
+    .dashboard-header {
+        font-family: Georgia, serif;
+        font-size: 1.8rem;
+        color: #F3F4F6;
+        text-align: center;
+        margin-bottom: 16px;
+    }
+    .dashboard {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        gap: 20px;
+        font-family: 'IBM Plex Sans', sans-serif;
+        color: #F3F4F6;
+    }
+    .panel {
+        background: #1E1E1E;
+        border: 1px solid #374151;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+    }
+    .panel-header {
+        font-size: 1.15rem;
+        font-weight: 700;
+        margin-bottom: 24px;
+        color: #F3F4F6;
+    }
+    .clock-container {
+        position: relative;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        margin-bottom: 28px;
+    }
+    #clock-text {
+        position: absolute;
+        font-size: 1.9rem;
+        font-weight: 700;
+        color: #F3F4F6;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 1px;
+    }
+    .controls {
+        display: flex;
+        gap: 12px;
+    }
+    .controls button {
+        flex: 1;
+        border: none;
+        border-radius: 8px;
+        padding: 12px;
+        color: white;
+        font-weight: 700;
+        font-size: 0.95rem;
+        cursor: pointer;
+        transition: filter 0.2s, transform 0.1s;
+    }
+    .controls button:hover {
+        filter: brightness(1.1);
+        transform: translateY(-1px);
+    }
+    .controls button:active {
+        transform: translateY(1px);
+    }
+    
+    .table-container {
+        overflow-y: auto;
+        flex: 1;
+        max-height: 290px;
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: left;
+        font-size: 0.9rem;
+    }
+    th {
+        color: #9CA3AF;
+        font-weight: 600;
+        padding-bottom: 12px;
+        border-bottom: 1px solid #374151;
+    }
+    td {
+        padding: 14px 0;
+        border-bottom: 1px solid #374151;
+        color: #E5E7EB;
+    }
+    tr:hover td {
+        color: #F3F4F6;
+        background: rgba(255,255,255,0.02);
+    }
+    .status-icon {
+        color: #22c55e;
+        font-size: 1rem;
+        background: rgba(34,197,94,0.15);
+        padding: 4px 8px;
+        border-radius: 20px;
+        font-weight: bold;
+    }
+    
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #4B5563; }
+</style>
+
+<script>
+    // 1. Draw dial ticks
+    const ticksGroup = document.getElementById('ticks');
+    for (let i = 0; i < 60; i++) {
+        const angle = (i * 6 * Math.PI) / 180;
+        const isHour = i % 5 === 0;
+        const r1 = isHour ? 82 : 88;
+        const r2 = 91;
+        const x1 = 110 + r1 * Math.sin(angle);
+        const y1 = 110 - r1 * Math.cos(angle);
+        const x2 = 110 + r2 * Math.sin(angle);
+        const y2 = 110 - r2 * Math.cos(angle);
+        
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
+        line.setAttribute('stroke', isHour ? '#9CA3AF' : '#4B5563');
+        line.setAttribute('stroke-width', isHour ? '2' : '1');
+        ticksGroup.appendChild(line);
+    }
+    
+    // 2. Logic & State
+    let isRunning = false;
+    let currentSessionTime = 0;
+    let timer = null;
+    let startTimestamp = null;
+    let sessions = JSON.parse(localStorage.getItem('scholara_history')) || [];
+    
+    const clockText = document.getElementById('clock-text');
+    const sweepHand = document.getElementById('sweeping-hand');
+    const progressArc = document.getElementById('progress-circle');
+    const historyList = document.getElementById('history-list');
+    const pauseBtn = document.getElementById('pause-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    
+    function formatTime(seconds) {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = seconds % 60;
+        const pad = n => n.toString().padStart(2, '0');
+        return `${pad(h)}:${pad(m)}:${pad(s)}`;
+    }
+    
+    function formatDuration(seconds) {
+        if (seconds < 60) return `${seconds}s`;
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        if (h > 0) return `${h}h ${padM(m)}m`;
+        return `${m}m`;
+    }
+    function padM(n) { return n.toString().padStart(2, '0'); }
+    
+    function renderHistory() {
+        historyList.innerHTML = '';
+        if (sessions.length === 0) {
+            historyList.innerHTML = '<tr><td colspan="5" style="text-align:center; color:#6B7280; padding: 30px;">No study sessions tracked yet. Press Start to begin!</td></tr>';
+            return;
+        }
+        
+        [...sessions].reverse().slice(0, 7).forEach(s => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${s.date}</td>
+                <td>${s.start}</td>
+                <td>${s.end}</td>
+                <td>${s.duration}</td>
+                <td style="text-align:center;"><span class="status-icon">✓</span></td>
+            `;
+            historyList.appendChild(tr);
+        });
+    }
+    
+    function updateVisuals() {
+        clockText.innerText = formatTime(currentSessionTime);
+        
+        let s = currentSessionTime % 60;
+        let deg = s * 6; 
+        sweepHand.setAttribute('transform', `rotate(${deg} 110 110)`);
+        
+        // Arc fills fully every hour
+        let fraction = (currentSessionTime % 3600) / 3600;
+        let offset = 596.90 - (fraction * 596.90);
+        progressArc.setAttribute('stroke-dashoffset', offset);
+    }
+    
+    function startTimer() {
+        if (!isRunning) {
+            if (currentSessionTime === 0) startTimestamp = new Date();
+            isRunning = true;
+            pauseBtn.innerText = 'Pause';
+            pauseBtn.style.background = '#f59e0b';
+            timer = setInterval(() => { currentSessionTime++; updateVisuals(); }, 1000);
+        } else {
+            isRunning = false;
+            clearInterval(timer);
+            pauseBtn.innerText = 'Resume';
+            pauseBtn.style.background = '#2563eb';
+        }
+    }
+    
+    function stopTimer() {
+        if (currentSessionTime === 0 && !isRunning) return; 
+        
+        isRunning = false;
+        clearInterval(timer);
+        
+        const endDate = new Date();
+        const startStr = startTimestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        const endStr = endDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        
+        const dateTokens = endDate.toDateString().split(' ');
+        const dateStr = `${dateTokens[2]} ${dateTokens[1]}`;
+        
+        sessions.push({ date: dateStr, start: startStr, end: endStr, duration: formatDuration(currentSessionTime) });
+        localStorage.setItem('scholara_history', JSON.stringify(sessions));
+        
+        currentSessionTime = 0;
+        startTimestamp = null;
+        pauseBtn.innerText = 'Start';
+        pauseBtn.style.background = '#f59e0b';
+        updateVisuals();
+        renderHistory();
+    }
+    
+    pauseBtn.addEventListener('click', startTimer);
+    stopBtn.addEventListener('click', stopTimer);
+    
+    updateVisuals();
+    renderHistory();
+</script>
+"""
+
+def render_study_tracker():
+    st.markdown("<div style='height: 30px;'></div>", unsafe_allow_html=True)
+    import streamlit.components.v1 as components
+    components.html(STUDY_TRACKER_HTML, height=520)
+
 LOCATION_JS = """
 <div id="loc-status" style="font-family:monospace;font-size:13px;color:#9CA3AF;
      padding:8px 0;">Requesting location…</div>
@@ -800,9 +1092,10 @@ def page_calendar():
             f"<div style='text-align:center;background:#1E1E1E;border-radius:10px;"
             f"padding:10px 4px;border:1px solid #374151;box-shadow:0 4px 6px rgba(0,0,0,0.3);'>"
             f"<div style='font-size:1.3rem;font-weight:800;color:{color};'>{val}</div>"
-            f"<div style='font-size:.65rem;color:#9CA3AF;margin-top:2px;'>{label}</div>"
             f"</div>", unsafe_allow_html=True,
         )
+
+    render_study_tracker()
 
 # ══════════════════════════════════════════════════════════════════════
 # PAGE: STUDY ASSISTANT
@@ -972,8 +1265,8 @@ def main():
             color: #F3F4F6 !important;
         }
 
-        /* Profile Component Top Right */
-        .scholara-profile-container {
+        /* Profile Component Top Right - Click Instead of Hover */
+        details.scholara-profile-container {
             position: fixed;
             top: 14px;
             right: 80px; 
@@ -981,7 +1274,7 @@ def main():
             font-family: inherit;
         }
         
-        .scholara-avatar {
+        details.scholara-profile-container summary {
             width: 36px;
             height: 36px;
             background: #2563eb;
@@ -996,14 +1289,20 @@ def main():
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             border: 2px solid white;
             transition: background 0.2s;
+            list-style: none; /* Hide default arrow */
+            outline: none;
         }
 
-        .scholara-avatar:hover {
+        /* Hide the triangle in webkit browsers */
+        details.scholara-profile-container summary::-webkit-details-marker {
+            display: none;
+        }
+
+        details.scholara-profile-container summary:hover {
             background: #1d4ed8;
         }
 
         .scholara-dropdown {
-            display: none;
             position: absolute;
             top: 46px;
             right: 0;
@@ -1016,10 +1315,7 @@ def main():
             color: #F3F4F6;
             text-align: left;
             cursor: default;
-        }
-
-        .scholara-profile-container:hover .scholara-dropdown {
-            display: block;
+            /* Dropdown is displayed automatically when <details> is open */
         }
 
         .profile-name {
@@ -1067,8 +1363,8 @@ def main():
         }
         </style>
         
-        <div class="scholara-profile-container">
-            <div class="scholara-avatar">SA</div>
+        <details class="scholara-profile-container">
+            <summary>SA</summary>
             <div class="scholara-dropdown">
                 <div class="profile-name">Student Name</div>
                 <div class="profile-role">Computer Science</div>
@@ -1080,7 +1376,7 @@ def main():
                     <span>⚙️</span> Manage Account
                 </div>
             </div>
-        </div>
+        </details>
     """, unsafe_allow_html=True)
 
     init_state()

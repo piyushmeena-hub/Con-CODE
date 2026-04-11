@@ -6,12 +6,18 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_classic.chains import RetrievalQA 
-from tinydb import TinyDB
+import sqlite3
 
 # --- 1. INITIAL SETUP ---
 # This sets the page title and the local JSON database for attendance
 st.set_page_config(page_title="Learner's FREE AI Hub", layout="wide")
-db = TinyDB('attendance_db.json')
+
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "database", "concode.db")
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
 
 # Sidebar for the API Key and status updates...
 with st.sidebar:
@@ -95,7 +101,10 @@ with tab2:
         
     if st.button("Submit Attendance"):
         if student_id:
-            db.insert({'id': student_id, 'status': status})
+            conn = get_db_connection()
+            conn.execute("INSERT INTO student_logs (student_id, status) VALUES (?, ?)", (student_id, status))
+            conn.commit()
+            conn.close()
             st.success(f"Successfully logged attendance for {student_id}!")
         else:
             st.error("Please enter a Student ID.")
@@ -103,8 +112,11 @@ with tab2:
     st.divider()
     st.subheader("Recent Logs")
     # Show the last 5 entries in the database
-    logs = db.all()
+    conn = get_db_connection()
+    logs = conn.execute("SELECT student_id, status, timestamp FROM student_logs ORDER BY id DESC LIMIT 5").fetchall()
+    conn.close()
+    
     if logs:
-        st.table(logs[-5:])
+        st.table([dict(row) for row in logs])
     else:
         st.write("No logs found yet.")

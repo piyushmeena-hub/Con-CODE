@@ -2,6 +2,9 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import yagmail
+import os
+
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "database", "concode.db")
 
 # =====================================
 # SETTINGS
@@ -19,44 +22,27 @@ THRESHOLD_DEFAULT = 75
 # =====================================
 
 def init_db():
-
-    conn = sqlite3.connect("attendance.db")
-
-    c = conn.cursor()
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS attendance (
-            subject TEXT,
-            attended INTEGER,
-            total INTEGER
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
+    # Database is initialized centrally via database/init_db.py now
+    pass
 
 def save_attendance(subject, attended, total):
 
-    conn = sqlite3.connect("attendance.db")
+    conn = sqlite3.connect(DB_PATH)
 
     c = conn.cursor()
 
     c.execute(
-        "DELETE FROM attendance WHERE subject=?",
+        "DELETE FROM subject_attendance WHERE subject=?",
         (subject,)
     )
 
     c.execute(
-        "INSERT INTO attendance VALUES (?,?,?)",
+        "INSERT INTO subject_attendance (subject, attended, total) VALUES (?,?,?)",
         (subject, attended, total)
     )
 
     conn.commit()
     conn.close()
-
-
-init_db()
 
 # =====================================
 # SESSION STATE

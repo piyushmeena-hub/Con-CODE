@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """
 Faculty Dashboard API — SQLAlchemy + SQLite backend
 Solves:
@@ -10,6 +11,28 @@ Run:
     python app.py
     # Swagger UI → http://localhost:8000/docs
 """
+=======
+import streamlit as st
+import os
+from langchain_groq import ChatGroq 
+from langchain_community.embeddings import HuggingFaceEmbeddings 
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
+from langchain_classic.chains import RetrievalQA 
+import sqlite3
+
+# --- 1. INITIAL SETUP ---
+# This sets the page title and the local JSON database for attendance
+st.set_page_config(page_title="Learner's FREE AI Hub", layout="wide")
+
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "database", "concode.db")
+def get_db_connection():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+>>>>>>> 01aa913d88921740c9e4c6737bcba4f8bb8766f2
 
 from __future__ import annotations
 
@@ -457,6 +480,7 @@ def submit_marks(
             .first()
         )
 
+<<<<<<< HEAD
         old_score: Optional[float] = None
 
         if existing:
@@ -465,6 +489,25 @@ def submit_marks(
             old_score       = existing.score
             existing.score  = entry.score
             mark_id         = existing.id
+=======
+with tab2:
+    st.header("📝 Quick Attendance Logger")
+    st.write("Log your study sessions or team attendance here.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        student_id = st.text_input("Student ID (e.g., ECE-001)")
+    with col2:
+        status = st.selectbox("Status", ["Present", "Late"])
+        
+    if st.button("Submit Attendance"):
+        if student_id:
+            conn = get_db_connection()
+            conn.execute("INSERT INTO student_logs (student_id, status) VALUES (?, ?)", (student_id, status))
+            conn.commit()
+            conn.close()
+            st.success(f"Successfully logged attendance for {student_id}!")
+>>>>>>> 01aa913d88921740c9e4c6737bcba4f8bb8766f2
         else:
             new_mark = Mark(
                 student_id=entry.student_id,
@@ -475,6 +518,7 @@ def submit_marks(
             db.flush()          # get new_mark.id before commit
             mark_id = new_mark.id
 
+<<<<<<< HEAD
         db.add(GradeAuditLog(
             mark_id=mark_id,
             faculty_id=faculty_id,
@@ -516,3 +560,16 @@ def get_audit_log(
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+=======
+    st.divider()
+    st.subheader("Recent Logs")
+    # Show the last 5 entries in the database
+    conn = get_db_connection()
+    logs = conn.execute("SELECT student_id, status, timestamp FROM student_logs ORDER BY id DESC LIMIT 5").fetchall()
+    conn.close()
+    
+    if logs:
+        st.table([dict(row) for row in logs])
+    else:
+        st.write("No logs found yet.")
+>>>>>>> 01aa913d88921740c9e4c6737bcba4f8bb8766f2

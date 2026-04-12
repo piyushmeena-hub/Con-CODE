@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 
 from database import engine
 import models
-from routers import attendance, productivity
+from routers import attendance, productivity, profile
 
 # Create database tables
 models.Base.metadata.create_all(bind=engine)
@@ -29,6 +29,7 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 # Include Routers
 app.include_router(attendance.router)
 app.include_router(productivity.router)
+app.include_router(profile.router)
 
 @app.get("/")
 def health_check():

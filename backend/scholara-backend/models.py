@@ -14,6 +14,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     target_attendance = Column(Float, default=75.0)
+    reference_face_url = Column(String, nullable=True) # Used for face verification
     
     attendances = relationship("Attendance", back_populates="user")
 

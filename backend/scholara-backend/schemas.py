@@ -24,3 +24,19 @@ class AttendanceResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class VerifyFaceResponse(BaseModel):
+    match: bool
+    message: str
+
+class TaskSchema(BaseModel):
+    id: str
+    text: str
+    completed: bool
+
+class SessionSchema(BaseModel):
+    date: str
+    subject: str
+    start_time: str
+    end_time: str
+    duration: str

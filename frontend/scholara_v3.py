@@ -11,7 +11,7 @@ New in v3 (Strict Mode):
   • Expandable proof viewer per subject per day
 
 Run:
-    pip install streamlit streamlit-javascript requests pillow
+    pip install streamlit streamlit-geolocation requests pillow
     streamlit run scholara_v3.py
 """
 
@@ -21,6 +21,7 @@ import time
 import random
 import calendar
 import base64
+import hashlib
 import json
 import requests
 from datetime import date, timedelta, datetime
@@ -101,8 +102,8 @@ DEFAULT_TIMETABLE = {
     "Wednesday": ["Maths", "Mechanical", "English Lecture", "Signal & System"],
     "Thursday":  ["Mechanical LAB", "Physics", "Economics", "EDC"],
     "Friday":    ["Maths", "Economics", "English Lecture", "Phy TUT", "Signal & System", "Signal LAB"],
-    "Saturday":  [],
-    "Sunday":    [],
+    "Saturday":  ["Physics", "Mechanical", "Maths TUT"],
+    "Sunday":    ["Economics", "English Lecture", "Maths"],
 }
 
 MOCK_SNIPPETS = [
@@ -726,6 +727,36 @@ LOCATION_JS = """
 </script>
 """
 
+_GEO_DEFAULT = {
+    "latitude": None,
+    "longitude": None,
+    "altitude": None,
+    "accuracy": None,
+    "altitudeAccuracy": None,
+    "heading": None,
+    "speed": None,
+}
+
+
+def streamlit_geolocation_keyed(widget_key: str):
+    """Browser GPS with a unique component key (needed when multiple subjects render on one page)."""
+    import streamlit_geolocation as sg
+
+    return sg._streamlit_geolocation(key=widget_key, default=dict(_GEO_DEFAULT))
+
+
+def _clear_mark_proof_session(d: date, subject: str) -> None:
+    for key in (
+        f"loc_stored_{d}_{subject}",
+        f"photo_bytes_{d}_{subject}",
+        f"face_match_{d}_{subject}",
+        f"cam_enabled_{d}_{subject}",
+        f"face_attempt_{d}_{subject}",
+        f"face_rej_{d}_{subject}",
+    ):
+        st.session_state.pop(key, None)
+
+
 def render_proof_card(proof: dict, subject: str):
     if not proof:
         return
@@ -801,9 +832,15 @@ def render_verified_mark_section(d: date, subject: str):
     ):
         if current_status == ATT and current_proof:
             render_proof_card(current_proof, subject)
-            if st.button("🔄 Re-capture Proof", key=f"recapture_{d}_{subject}", use_container_width=True):
-                set_record(d, subject, CLEAR, None) # Clear it completely to force proper remarking
-                st.rerun()
+            if d == date.today():
+                if st.button("🔄 Re-capture Proof", key=f"recapture_{d}_{subject}", use_container_width=True):
+                    set_record(d, subject, CLEAR, None) # Clear it completely to force proper remarking
+                    _clear_mark_proof_session(d, subject)
+                    st.rerun()
+            return
+            
+        if d != date.today():
+            st.warning("⏱️ Attendance can only be marked on the day of the class.")
             return
 
         st.markdown(
@@ -815,65 +852,198 @@ def render_verified_mark_section(d: date, subject: str):
         # ── Step 1: Location ─────────────────────────────────────────
         st.markdown("**Step 1 — Capture your location**")
 
-        loc_key = f"loc_{d}_{subject}"
         stored_loc_key = f"loc_stored_{d}_{subject}"
 
-        loc_result = components.html(LOCATION_JS, height=60)
+        st.info("💡 Ensure your browser's location services are enabled. You must be physically present in the classroom to mark attendance.")
 
-        with st.expander("📍 Enter coordinates manually (if browser blocks location)", expanded=False):
-            ml1, ml2 = st.columns(2)
-            man_lat = ml1.number_input("Latitude", value=26.9124, format="%.6f", key=f"mlat_{d}_{subject}")
-            man_lon = ml2.number_input("Longitude", value=75.7873, format="%.6f", key=f"mlon_{d}_{subject}")
-            man_acc = st.number_input("Accuracy (meters)", value=50, min_value=1, max_value=10000, key=f"macc_{d}_{subject}")
-            if st.button("📍 Use These Coordinates", key=f"use_manual_{d}_{subject}", use_container_width=True):
-                with st.spinner("Resolving address…"):
-                    address = reverse_geocode(man_lat, man_lon)
+        loc_geo = None
+        try:
+            loc_geo = streamlit_geolocation_keyed(f"geo_{d.isoformat()}_{subject}")
+        except Exception:
+            st.caption(
+                "Install **streamlit-geolocation** for live GPS: `pip install streamlit-geolocation`"
+            )
+            components.html(LOCATION_JS, height=60)
+
+        if loc_geo and isinstance(loc_geo, dict):
+            lat_v = loc_geo.get("latitude")
+            lon_v = loc_geo.get("longitude")
+            if lat_v is not None and lon_v is not None:
+                acc_v = loc_geo.get("accuracy")
+                if acc_v is None:
+                    acc_v = 0.0
                 st.session_state[stored_loc_key] = {
-                    "lat": man_lat, "lon": man_lon,
-                    "accuracy": man_acc, "address": address
+                    "lat": float(lat_v),
+                    "lon": float(lon_v),
+                    "accuracy": float(acc_v),
+                    "address": f"GPS ({float(lat_v):.5f}, {float(lon_v):.5f})",
+                }
+
+        with st.expander("Enter GPS manually"):
+            c1, c2, c3 = st.columns(3)
+            lat_m = c1.number_input(
+                "Latitude",
+                value=0.0,
+                format="%.6f",
+                key=f"man_lat_{d}_{subject}",
+            )
+            lon_m = c2.number_input(
+                "Longitude",
+                value=0.0,
+                format="%.6f",
+                key=f"man_lon_{d}_{subject}",
+            )
+            acc_m = c3.number_input(
+                "Accuracy (m)",
+                min_value=0.0,
+                value=25.0,
+                key=f"man_acc_{d}_{subject}",
+            )
+            if st.button("Use manual coordinates", key=f"man_apply_{d}_{subject}"):
+                st.session_state[stored_loc_key] = {
+                    "lat": float(lat_m),
+                    "lon": float(lon_m),
+                    "accuracy": float(acc_m),
+                    "address": f"Manual ({lat_m:.5f}, {lon_m:.5f})",
                 }
                 st.rerun()
 
         stored_loc = st.session_state.get(stored_loc_key)
+        
+        CLASS_LAT = 26.863749574589818
+        CLASS_LON = 75.81045281948843
+        loc_match = False
+        
         if stored_loc:
-            st.success(
-                f"✅ **Location confirmed:** {stored_loc['address']}\n\n"
-                f"📌 `{stored_loc['lat']:.5f}, {stored_loc['lon']:.5f}` "
-                f"(±{stored_loc['accuracy']}m)"
-            )
+            import math
+            def haversine(lat1, lon1, lat2, lon2):
+                R = 6371.0
+                dlat = math.radians(lat2 - lat1)
+                dlon = math.radians(lon2 - lon1)
+                a = math.sin(dlat / 2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2)**2
+                c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+                return R * c * 1000
+                
+            dist = haversine(stored_loc['lat'], stored_loc['lon'], CLASS_LAT, CLASS_LON)
+            loc_match = dist <= 400 # 400 meters tolerance for GPS jitter
+            
+            if loc_match:
+                st.success(
+                    f"✅ **Location confirmed:** {stored_loc['address']}\n\n"
+                    f"📌 `{stored_loc['lat']:.5f}, {stored_loc['lon']:.5f}` "
+                    f"(±{stored_loc['accuracy']}m)\n\n"
+                    f"🏫 You are {int(dist)}m from the classroom."
+                )
+            else:
+                st.error(
+                    f"❌ **Location rejected:** {stored_loc['address']}\n\n"
+                    f"📌 `{stored_loc['lat']:.5f}, {stored_loc['lon']:.5f}`\n\n"
+                    f"🏫 You are {int(dist)}m away from the classroom. You must be in the classroom to mark attendance."
+                )
 
         st.markdown("---")
 
         # ── Step 2: Photo proof ──────────────────────────────────────
-        st.markdown("**Step 2 — Capture or upload a photo**")
+        st.markdown("**Step 2 — Capture your photo**")
         st.caption("Take a selfie or photo showing you're at the lecture.")
 
-        photo_file = st.file_uploader(
-            "Camera / Gallery",
-            type=["jpg", "jpeg", "png", "webp"],
-            label_visibility="collapsed",
-            key=f"photo_{d}_{subject}",
-        )
+        face_match_key = f"face_match_{d}_{subject}"
+        photo_bytes_key = f"photo_bytes_{d}_{subject}"
 
-        photo_b64 = None
-        if photo_file:
-            img_bytes = photo_file.read()
-            photo_b64 = img_to_b64(img_bytes)
-            st.markdown(
-                f"<img src='data:image/jpeg;base64,{photo_b64}' "
-                f"style='border-radius:8px;max-height:120px;margin-top:6px;'/>",
-                unsafe_allow_html=True,
+        # Initialize states
+        if face_match_key not in st.session_state:
+            st.session_state[face_match_key] = False
+
+        cam_key = f"cam_enabled_{d}_{subject}"
+        if cam_key not in st.session_state:
+            st.session_state[cam_key] = False
+
+        photo_file = None
+
+        if not st.session_state[cam_key]:
+            if st.button("📸 Open Camera to Capture Face", key=f"btn_cam_{d}_{subject}"):
+                st.session_state[cam_key] = True
+                st.rerun()
+        else:
+            photo_file = st.camera_input(
+                "Camera",
+                label_visibility="collapsed",
+                key=f"photo_{d}_{subject}",
             )
-            st.success("✅ Photo captured.")
+
+        photo_bytes = st.session_state.get(photo_bytes_key)
+        if photo_file:
+            img_bytes = photo_file.getvalue()
+            if img_bytes:
+                photo_bytes = img_bytes
+                st.session_state[photo_bytes_key] = img_bytes
+
+        if photo_bytes:
+            if not st.session_state[face_match_key]:
+                ph = hashlib.sha256(photo_bytes).hexdigest()
+                attempt_key = f"face_attempt_{d}_{subject}"
+                rej_key = f"face_rej_{d}_{subject}"
+                if st.session_state.get(attempt_key) != ph:
+                    st.session_state.pop(rej_key, None)
+                    with st.spinner("Checking identity with student database..."):
+                        try:
+                            files = {
+                                "photo": (
+                                    "capture.jpg",
+                                    photo_bytes,
+                                    "image/jpeg",
+                                )
+                            }
+                            res = requests.post(
+                                "http://localhost:8000/api/v1/attendance/verify_face",
+                                files=files,
+                            )
+                            res.raise_for_status()
+                            result = res.json()
+                            st.session_state[attempt_key] = ph
+
+                            if result.get("match"):
+                                st.session_state.pop(rej_key, None)
+                                st.session_state[face_match_key] = True
+                                st.success("✅ Face recognized.")
+                                st.rerun()
+                            else:
+                                msg = result.get(
+                                    "message", "Face not recognise warning."
+                                )
+                                st.session_state[rej_key] = msg
+                                st.error(f"⚠️ {msg}")
+                        except Exception as e:
+                            st.error(f"Error connecting to face verification: {e}")
+                elif st.session_state.get(rej_key):
+                    st.error(f"⚠️ {st.session_state[rej_key]}")
+            else:
+                st.success("✅ Face recognized.")
 
         st.markdown("---")
 
-        # ── Step 3: Confirm (STRICT) ─────────────────────────────────
-        st.markdown("**Step 3 — Confirm attendance**")
+        # ── Confirm ─────────────────────────────────
+        can_confirm = (
+            stored_loc is not None
+            and loc_match
+            and photo_bytes
+            and st.session_state[face_match_key]
+        )
 
-        can_confirm = stored_loc is not None and photo_b64 is not None
         if not can_confirm:
-            st.warning("⚠️ Both Location and a Photo are strictly required to mark attendance.")
+            if not stored_loc:
+                st.warning("⚠️ Location is required.")
+            elif not loc_match:
+                st.warning(
+                    "⚠️ Location does not match classroom coordinates."
+                )
+
+            if not photo_bytes:
+                st.warning("⚠️ Photo capture is required.")
+            elif not st.session_state[face_match_key]:
+                st.warning(
+                    "⚠️ Face must be recognized before marking attendance."
+                )
 
         _, col_center, _ = st.columns([1, 2, 1])
 
@@ -887,7 +1057,7 @@ def render_verified_mark_section(d: date, subject: str):
             with st.spinner("Encrypting & Uploading to Backend..."):
                 # 1. Prepare the exact format FastAPI expects
                 files = {
-                    "photo": (photo_file.name, photo_file.getvalue(), photo_file.type)
+                    "photo": ("capture.jpg", photo_bytes, "image/jpeg")
                 }
                 data = {
                     "subject": subject,
@@ -932,9 +1102,12 @@ def page_day_view():
 
     nav1, nav2, nav3 = st.columns([1, 5, 1])
     with nav1:
-        if st.button("◀", use_container_width=True):
-            st.session_state.viewed_date -= timedelta(days=1)
-            st.rerun()
+        if d > date(2026, 1, 1):
+            if st.button("◀", use_container_width=True):
+                st.session_state.viewed_date -= timedelta(days=1)
+                st.rerun()
+        else:
+            st.button("◀", use_container_width=True, disabled=True)
     with nav2:
         st.markdown(
             f"<h3 style='text-align:center;color:#F3F4F6;font-family:Georgia,serif;margin:0;'>"
@@ -942,11 +1115,14 @@ def page_day_view():
             unsafe_allow_html=True,
         )
     with nav3:
-        if st.button("▶", use_container_width=True):
-            st.session_state.viewed_date += timedelta(days=1)
-            st.rerun()
+        if d < date.today():
+            if st.button("▶", use_container_width=True):
+                st.session_state.viewed_date += timedelta(days=1)
+                st.rerun()
+        else:
+            st.button("▶", use_container_width=True, disabled=True)
 
-    picked = st.date_input("Jump to date", value=d, label_visibility="collapsed")
+    picked = st.date_input("Jump to date", value=d, min_value=date(2026, 1, 1), max_value=date.today(), label_visibility="collapsed")
     if picked != d:
         st.session_state.viewed_date = picked
         st.rerun()
@@ -959,22 +1135,7 @@ def page_day_view():
         return
 
     st.markdown(f"**{get_day_name(d)} · {len(subjects_today)} class(es)**")
-
-    # Bulk actions (All Attended removed for strict proof enforcement)
-    bb, bc, bd = st.columns(3)
-    if bb.button("— All Off", use_container_width=True):
-        for s in subjects_today:
-            set_record(d, s, OFF)
-        st.rerun()
-    if bc.button("❌ All Missed", use_container_width=True):
-        for s in subjects_today:
-            set_record(d, s, MISS)
-        st.rerun()
-    if bd.button("○ Clear All", use_container_width=True):
-        for s in subjects_today:
-            set_record(d, s, CLEAR)
-        st.rerun()
-
+    
     st.divider()
 
     for subject in subjects_today:
@@ -1024,25 +1185,7 @@ def page_day_view():
             unsafe_allow_html=True,
         )
 
-        b1, b2, b3, b4 = st.columns(4)
-        key = f"{d.isoformat()}_{subject}"
-
-        if b1.button("○ Clear", key=f"{key}_clr", use_container_width=True):
-            set_record(d, subject, CLEAR)
-            st.rerun()
-        if b2.button("— Off", key=f"{key}_off", use_container_width=True):
-            set_record(d, subject, OFF)
-            st.rerun()
-        if b3.button("❌ Missed", key=f"{key}_miss", use_container_width=True):
-            set_record(d, subject, MISS)
-            st.rerun()
-
-        # Strict visual indicator - forcing use of the expander
-        if current_status == ATT and has_proof:
-            b4.button("✅ Verified", key=f"{key}_verified_btn", disabled=True, use_container_width=True)
-        else:
-            b4.button("⬇️ Expand to Mark", key=f"{key}_expand_btn", disabled=True, use_container_width=True)
-
+        # The student can only use the strict biometric/location attendance verification interface
         render_verified_mark_section(d, subject)
         st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
 
@@ -1427,7 +1570,7 @@ def render_sidebar() -> str:
         st.divider()
         page = st.radio(
             "Navigate",
-            ["🧭 Day View", "⏳ Timetable", "📆 Calendar", "📈 Subjects", "🎯 Focus Time", "🧠 Study Assistant"],
+            ["🧭 Day View", "⏳ Timetable", "📆 Calendar", "📈 Subjects", "🎯 Focus Time", "🧠 Study Assistant", "👤 Profile Dashboard"],
             label_visibility="collapsed",
             key="active_page",
         )
@@ -1457,6 +1600,69 @@ def render_sidebar() -> str:
         st.divider()
         st.caption("Scholara v3.0 · Strict Proof Mode\nBuilt with Streamlit")
     return page
+
+# ══════════════════════════════════════════════════════════════════════
+# PROFILE DASHBOARD PAGE
+# ══════════════════════════════════════════════════════════════════════
+def page_profile_dashboard():
+    st.markdown("<h1 style='font-family:Georgia,serif;font-size:2.8rem;color:#F3F4F6;'>👤 Profile & Settings</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='color:#9CA3AF;font-size:1rem;'>Manage your academic identity and security references.</p>", unsafe_allow_html=True)
+    st.markdown("---")
+
+    col1, col2 = st.columns([1, 1.5], gap="large")
+
+    try:
+        res = requests.get("http://localhost:8000/api/v1/profile/me")
+        if res.status_code == 200:
+            profile_data = res.json()
+        else:
+            profile_data = {"email": "student@scholara.edu", "target_attendance": 75.0, "reference_face_url": None}
+    except Exception as e:
+        st.error("Cannot connect to backend.")
+        profile_data = {"email": "student@scholara.edu", "target_attendance": 75.0, "reference_face_url": None}
+
+    with col1:
+        st.markdown("### 🎓 Personal Information")
+        st.write(f"**Email:** {profile_data.get('email')}")
+        st.write(f"**Role:** Student")
+        st.write(f"**Target Attendance:** {profile_data.get('target_attendance')}%")
+
+    with col2:
+        st.markdown("### 🔒 Face Recognition Data")
+        st.info("This photo is securely stored to verify your identity when you mark attendance.")
+        
+        has_face = profile_data.get('reference_face_url') is not None
+        
+        # Display Box
+        if has_face:
+            img_url = f"http://localhost:8000/{profile_data.get('reference_face_url')}"
+            st.image(img_url, caption="Your stored reference face", width=250)
+            st.success("✅ Facial recognition is active.")
+        else:
+            st.markdown(
+                """<div style='background:#1E1E1E;border:2px dashed #4B5563;border-radius:12px;height:250px;width:250px;display:flex;align-items:center;justify-content:center;color:#9CA3AF;'>
+                    No face uploaded
+                </div>""", 
+                unsafe_allow_html=True
+            )
+            st.warning("⚠️ You must upload your face before you can mark attendance.")
+            
+            uploaded_file = st.camera_input("Capture Face for System")
+            
+            if uploaded_file:
+                with st.spinner("Uploading and registering face..."):
+                    try:
+                        filepath = uploaded_file.name
+                        files = {"photo": (filepath, uploaded_file.getvalue(), uploaded_file.type)}
+                        upload_res = requests.post("http://localhost:8000/api/v1/profile/upload_face", files=files)
+                        if upload_res.status_code == 200:
+                            st.success("Face registered successfully!")
+                            time.sleep(1.5)
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to upload: {upload_res.text}")
+                    except Exception as e:
+                        st.error(f"Error uploading face: {e}")
 
 # ══════════════════════════════════════════════════════════════════════
 # MAIN
@@ -1606,7 +1812,6 @@ def main():
             color: #F3F4F6;
             text-align: left;
             cursor: default;
-            /* Dropdown is displayed automatically when <details> is open */
         }
 
         .profile-name {
@@ -1663,14 +1868,20 @@ def main():
                 <div class="profile-detail"><span>✉️</span> student@scholara.edu</div>
                 <div class="profile-detail"><span>📱</span> +91 9876543210</div>
                 <hr style="margin: 8px 0 4px 0; border-color: #374151; border-style: solid; border-width: 1px 0 0 0;">
-                <div class="profile-menu-item">
-                    <span>⚙️</span> Manage Account
-                </div>
+                <a href="?nav=profile" target="_self" style="text-decoration:none;color:inherit;">
+                    <div class="profile-menu-item">
+                        <span>⚙️</span> Manage Account
+                    </div>
+                </a>
             </div>
         </details>
     """, unsafe_allow_html=True)
 
     init_state()
+    if "nav" in st.query_params and st.query_params["nav"] == "profile":
+        st.session_state.active_page = "👤 Profile Dashboard"
+        st.query_params.clear()
+
     page = render_sidebar()
 
     if page == "🧭 Day View":          page_day_view()
@@ -1679,6 +1890,7 @@ def main():
     elif page == "📈 Subjects":        page_subjects()
     elif page == "🎯 Focus Time":       page_focus_time()
     elif page == "🧠 Study Assistant": page_study_assistant()
+    elif page == "👤 Profile Dashboard": page_profile_dashboard()
 
 if __name__ == "__main__":
     main()

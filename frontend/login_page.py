@@ -290,13 +290,50 @@ a { color: #60a5fa; display: block; text-align: center; margin-top: 10px; text-d
 """
 
 # ---------------- ROUTES ----------------
+import requests
+from flask import Flask, request, redirect, url_for, flash, render_template_string, make_response
+
+# ... [Keep your HTML string variables (home_html, login_html, signup_html) here] ...
+
+# ---------------- ROUTES ----------------
+
+# Define where your FastAPI server lives
+FASTAPI_URL = "http://localhost:8000/api/v1/auth"
+STREAMLIT_URL = "http://localhost:8501" # Where the user goes after logging in
+
 @app.route("/")
 def home():
     return render_template_string(home_html)
 
+@app.route("/signup/<role>", methods=["GET", "POST"])
+def signup(role):
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
+        payload = {"username": username, "password": password, "role": role}
+        print(f"DEBUG: Signup attempt for {username} with password length {len(password)}")
+
+        try:
+            response = requests.post(f"{FASTAPI_URL}/signup", json=payload)
+            print(f"DEBUG: FastAPI Signup Status: {response.status_code}") # Look for this in terminal!
+            
+            if response.status_code == 200:
+                flash("Account Created! Please Login.")
+                # We use the direct string path to be safe
+                return redirect(f"/login/{role}") 
+            else:
+                try:
+                    msg = response.json().get("detail", "Signup failed")
+                except:
+                    msg = "Check FastAPI terminal for errors"
+                flash(msg)
+        except Exception as e:
+            flash(f"Connection Error: {e}")
+
+    return render_template_string(signup_html, role=role)
 @app.route("/login/<role>", methods=["GET", "POST"])
 def login(role):
-    if role not in users:
+    if role not in ["student", "teacher"]:
         return "Invalid role", 404
 
     if request.method == "POST":
@@ -304,43 +341,40 @@ def login(role):
         password = request.form.get("password")
         remember = request.form.get("remember") # 'on' if checked
 
-        if username in users[role] and check_password_hash(users[role][username], password):
-            # Create a response to set cookies
-            resp = make_response(f"{role.capitalize()} Login Successful!")
-            
-            if remember:
-                # Store username in cookie for 30 days
-                resp.set_cookie('remembered_user', username, max_age=30*24*60*60)
+        # 1. Package the data for FastAPI
+        payload = {"username": username, "password": password, "role": role}
+
+        try:
+            # 2. Send the request to FastAPI
+            response = requests.post(f"{FASTAPI_URL}/login", json=payload)
+
+            # 3. Handle FastAPI's response
+            if response.status_code == 200:
+                # Success! Extract the JWT Token from FastAPI's response
+                token_data = response.json()
+                access_token = token_data["access_token"]
+                
+                # 4. Redirect the user to Streamlit
+                resp = make_response(redirect(STREAMLIT_URL))
+                
+                # 5. Save the token in a cookie so Streamlit can read it
+                if remember:
+                    # Expires in 30 days
+                    resp.set_cookie('scholara_token', access_token, max_age=30*24*60*60)
+                else:
+                    # Expires when the browser closes
+                    resp.set_cookie('scholara_token', access_token)
+                    
+                return resp
             else:
-                # Delete cookie if they didn't check the box
-                resp.delete_cookie('remembered_user')
-            
-            return resp
-        else:
-            flash("Invalid Credentials")
+                # FastAPI returns a 401 error if passwords don't match
+                flash("Invalid Credentials")
+                
+        except requests.exceptions.ConnectionError:
+            flash("CRITICAL: Backend server is offline. Please start FastAPI.")
 
-    # On GET, retrieve the remembered username from cookies
-    remembered_user = request.cookies.get('remembered_user', '')
-    return render_template_string(login_html, role=role, remembered_user=remembered_user)
-
-@app.route("/signup/<role>", methods=["GET", "POST"])
-def signup(role):
-    if role not in users:
-        return "Invalid role", 404
-
-    if request.method == "POST":
-        username = request.form["username"]
-        password = request.form["password"]
-
-        if username in users[role]:
-            flash("User already exists!")
-            return redirect(url_for("signup", role=role))
-
-        users[role][username] = generate_password_hash(password)
-        flash("Account Created Successfully!")
-        return redirect(url_for("login", role=role))
-
-    return render_template_string(signup_html, role=role)
+    # On GET, render the page
+    return render_template_string(login_html, role=role)
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(port=5000, debug=True)

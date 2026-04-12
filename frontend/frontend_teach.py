@@ -188,39 +188,23 @@ div[data-testid="stHorizontalBlock"] div[data-testid="stColumn"]:last-child butt
 # ─────────────────────────────────────────────
 def _check_auth() -> bool:
     """
-    Reads the JWT from st.query_params (Streamlit passes cookies via
-    query param when redirected from Flask login page) or from session state.
-    Returns True if valid, renders a redirect wall if not.
+    Reads ?user= and ?role= set by the Flask login redirect.
+    Stores them in session state so subsequent reruns don't need the params.
+    Shows a login wall if neither is present.
     """
-    # Already verified this session
     if st.session_state.get("authenticated"):
         return True
 
-    # Check query param ?token=... (set by Flask redirect)
-    token = st.query_params.get("token", "")
+    # Pick up query params on first load after redirect
+    user = st.query_params.get("user", "")
+    role = st.query_params.get("role", "")
 
-    # Also accept token stored in session from a previous verify
-    if not token:
-        token = st.session_state.get("auth_token", "")
-
-    if token:
-        try:
-            r = requests.get(
-                f"{API_BASE_URL}/auth/verify",
-                params={"token": token},
-                timeout=5,
-            )
-            if r.status_code == 200:
-                data = r.json()
-                st.session_state.authenticated = True
-                st.session_state.auth_token    = token
-                st.session_state.auth_username = data["username"]
-                st.session_state.auth_role     = data["role"]
-                # Clean token from URL bar
-                st.query_params.clear()
-                return True
-        except Exception:
-            pass
+    if user and role:
+        st.session_state.authenticated  = True
+        st.session_state.auth_username  = user
+        st.session_state.auth_role      = role
+        st.query_params.clear()
+        return True
 
     # Not authenticated — show redirect wall
     st.markdown(f"""
@@ -239,13 +223,11 @@ def _check_auth() -> bool:
         color: white; border-radius: 50px; font-weight: 700;
         font-size: 1rem; text-decoration: none;
         box-shadow: 0 5px 15px rgba(37,99,235,0.4);
-        transition: transform 0.2s ease;
     }}
-    .auth-btn:hover {{ transform: translateY(-3px); }}
     </style>
     <div class="auth-wall">
         <h2>🎓 Faculty Dashboard</h2>
-        <p>You need to log in to access this page.</p>
+        <p>Please log in to continue.</p>
         <a class="auth-btn" href="{LOGIN_PAGE_URL}" target="_self">Go to Login →</a>
     </div>
     """, unsafe_allow_html=True)

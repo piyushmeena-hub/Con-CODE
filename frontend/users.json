@@ -1,0 +1,10 @@
+{
+  "drsmith": {
+    "password": "scrypt:32768:8:1$KHaJkMTmw3GPmR9w$d0337fe0802a5327e0627da6a1290292644c291f79833bb2e1eba4bf76dab235746b2329be89cc4fa968913ed082733b38d76afec9ad5104df1970ac6b8e5e02",
+    "role": "teacher"
+  },
+  "test1": {
+    "password": "scrypt:32768:8:1$TyrftnMvHnbpxcUS$e93771588469664885089b2bbbf63adc0e9b1d88a6dd135ddc151ae65fad6b94b4b933814299587e7d6ad05ff5db9c1186541c2c60bba14bff342bf82bb7fe98",
+    "role": "teacher"
+  }
+}

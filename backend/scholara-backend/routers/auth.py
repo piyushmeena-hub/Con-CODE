@@ -8,12 +8,13 @@ from database import get_db
 import models
 import schemas
 
+import bcrypt
+
 # Security settings
 SECRET_KEY = "your-super-secret-key-scholara" # Change this in production!
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30 # 30 days
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
 
 def create_access_token(data: dict):
@@ -29,8 +30,11 @@ def signup(user: schemas.UserCreate, db: Session = Depends(get_db)):
     if db_user:
         raise HTTPException(status_code=400, detail="Username already registered")
     
-    # 2. Hash the password
-    hashed_pwd = pwd_context.hash(user.password)
+    # SANITIZE PASSWORD: Ensure it's a string and within Bcrypt's 72-byte limit
+    raw_password = str(user.password)[:71] 
+    
+    # Hash the sanitized password bypassing passlib
+    hashed_pwd = bcrypt.hashpw(raw_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
     
     # 3. Save to database
     new_user = models.User(
@@ -55,7 +59,19 @@ def login(user: schemas.UserLogin, db: Session = Depends(get_db)):
     ).first()
     
     # 2. Verify password
-    if not db_user or not pwd_context.verify(user.password, db_user.hashed_password):
+    if not db_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+        )
+    
+    raw_password = str(user.password)[:71].encode('utf-8')
+    try:
+        is_valid = bcrypt.checkpw(raw_password, db_user.hashed_password.encode('utf-8'))
+    except Exception:
+        is_valid = False
+
+    if not is_valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",

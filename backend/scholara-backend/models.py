@@ -12,7 +12,9 @@ class AttendanceStatus(str, enum.Enum):
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True)
+    username = Column(String, unique=True, index=True) # Replaced email with username
+    hashed_password = Column(String)
+    role = Column(String, default="student") # 'student' or 'teacher'
     target_attendance = Column(Float, default=75.0)
     reference_face_url = Column(String, nullable=True) # Used for face verification
     

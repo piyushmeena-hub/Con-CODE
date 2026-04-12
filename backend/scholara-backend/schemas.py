@@ -3,6 +3,20 @@ from typing import Optional
 from datetime import datetime
 from models import AttendanceStatus
 
+# Add this at the top with your other imports
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+    role: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 # --- Responses ---
 class ProofResponse(BaseModel):
     latitude: float
@@ -24,11 +38,14 @@ class AttendanceResponse(BaseModel):
 
     class Config:
         from_attributes = True
+<<<<<<< HEAD
 
 class VerifyFaceResponse(BaseModel):
     match: bool
     message: str
 
+=======
+>>>>>>> 36ed83e833aa2a501a5fa6f307d02166683aba0d
 class TaskSchema(BaseModel):
     id: str
     text: str

@@ -381,7 +381,7 @@ def render_profile_dropdown():
     fac = _get_faculty()
     name  = fac.get("name",       "Dr. Smith")
     dept  = fac.get("dept",       "Computer Science")
-    fid   = fac.get("faculty_id", "FAC-CS-2024")
+    fid   = fac.get("fac_id", fac.get("faculty_id", "FAC-CS-2024"))
     email = fac.get("email",      "dr.smith@university.edu")
     phone = fac.get("phone",      "+91 98765 43210")
 

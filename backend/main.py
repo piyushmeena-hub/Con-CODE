@@ -4,19 +4,21 @@ Merges teammate's Faculty/Student/Timetable models with
 audit trail, enrollment, and full CRUD endpoints.
 
 Run:
-    pip install fastapi uvicorn sqlalchemy pydantic
+    pip install fastapi uvicorn sqlalchemy pydantic python-jose[cryptography] passlib[bcrypt]
     python main.py
     # Swagger UI → http://localhost:8000/docs
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import (
     Column, DateTime, Float, ForeignKey,
@@ -25,8 +27,28 @@ from sqlalchemy import (
 from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 
 # ══════════════════════════════════════════════════════════════════════
-# DATABASE
+# JWT CONFIG
 # ══════════════════════════════════════════════════════════════════════
+
+SECRET_KEY  = "scholara-secret-key-change-in-production"
+ALGORITHM   = "HS256"
+TOKEN_EXPIRE_DAYS = 30
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def _hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+def _verify(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
+
+def _create_token(data: dict, expires_days: int = TOKEN_EXPIRE_DAYS) -> str:
+    payload = data.copy()
+    payload["exp"] = datetime.utcnow() + timedelta(days=expires_days)
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+def _decode_token(token: str) -> dict:
+    return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///./faculty_dashboard.db"
 engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
@@ -123,6 +145,15 @@ class GradeAuditLog(Base):
     mark = relationship("Mark", back_populates="audit_logs")
 
 
+class User(Base):
+    """Auth accounts — linked to either a Faculty or Student record."""
+    __tablename__ = "users"
+    id            = Column(Integer, primary_key=True, index=True)
+    username      = Column(String,  unique=True, nullable=False, index=True)
+    hashed_password = Column(String, nullable=False)
+    role          = Column(String,  nullable=False)   # "teacher" | "student"
+
+
 Base.metadata.create_all(bind=engine)
 
 # ══════════════════════════════════════════════════════════════════════
@@ -214,15 +245,22 @@ def _seed():
                 day_of_week=day, time_slot=slot,
             ))
 
+        # Default teacher account
+        db.add(User(
+            username="drsmith",
+            hashed_password=_hash("faculty123"),
+            role="teacher",
+        ))
+
         db.commit()
         print("✅ Database seeded successfully.")
+        print("   Default login → username: drsmith  password: faculty123  role: teacher")
     except Exception as e:
         db.rollback()
         print(f"⚠️  Seed failed: {e}")
         raise
     finally:
         db.close()
-
 
 _seed()
 
@@ -301,6 +339,13 @@ class AuditLogOut(BaseModel):
     timestamp:  datetime
     model_config = {"from_attributes": True}
 
+
+# ── Auth schemas ──────────────────────────────────────────────────────
+class AuthPayload(BaseModel):
+    username: str
+    password: str
+    role: str   # "teacher" | "student"
+
 # ══════════════════════════════════════════════════════════════════════
 # APP
 # ══════════════════════════════════════════════════════════════════════
@@ -348,6 +393,51 @@ def _build_student_out(student: Student, db: Session) -> dict:
 @app.get("/")
 def root():
     return {"status": "ok", "version": "2.0.0"}
+
+
+# ══════════════════════════════════════════════════════════════════════
+# AUTH ENDPOINTS  (consumed by login_page.py Flask app)
+# ══════════════════════════════════════════════════════════════════════
+
+@app.post("/api/v1/auth/signup")
+def signup(payload: AuthPayload, db: Session = Depends(get_db)):
+    """Create a new user account."""
+    if payload.role not in ("teacher", "student"):
+        raise HTTPException(status_code=400, detail="role must be 'teacher' or 'student'")
+    if db.query(User).filter(User.username == payload.username).first():
+        raise HTTPException(status_code=400, detail="Username already taken")
+    db.add(User(
+        username=payload.username,
+        hashed_password=_hash(payload.password),
+        role=payload.role,
+    ))
+    db.commit()
+    return {"message": f"Account created for '{payload.username}'"}
+
+
+@app.post("/api/v1/auth/login")
+def login(payload: AuthPayload, db: Session = Depends(get_db)):
+    """Verify credentials and return a JWT access token."""
+    user = db.query(User).filter(User.username == payload.username).first()
+    if not user or not _verify(payload.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if user.role != payload.role:
+        raise HTTPException(status_code=403, detail=f"Account is not a {payload.role} account")
+    token = _create_token({"sub": user.username, "role": user.role, "user_id": user.id})
+    return {"access_token": token, "token_type": "bearer", "role": user.role}
+
+
+@app.get("/api/v1/auth/verify")
+def verify_token(token: str, db: Session = Depends(get_db)):
+    """Streamlit calls this to validate the cookie token on page load."""
+    try:
+        data = _decode_token(token)
+        user = db.query(User).filter(User.username == data["sub"]).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+        return {"valid": True, "username": user.username, "role": user.role}
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
 # ── Faculty profile ───────────────────────────────────────────────────

@@ -314,7 +314,7 @@ def signup(role):
         print(f"DEBUG: Signup attempt for {username} with password length {len(password)}")
 
         try:
-            response = requests.post(f"{FASTAPI_URL}/signup", json=payload)
+            response = requests.post(f"{FASTAPI_URL}/signup", json=payload, timeout=5)
             print(f"DEBUG: FastAPI Signup Status: {response.status_code}") # Look for this in terminal!
             
             if response.status_code == 200:
@@ -346,7 +346,7 @@ def login(role):
 
         try:
             # 2. Send the request to FastAPI
-            response = requests.post(f"{FASTAPI_URL}/login", json=payload)
+            response = requests.post(f"{FASTAPI_URL}/login", json=payload, timeout=5)
 
             # 3. Handle FastAPI's response
             if response.status_code == 200:

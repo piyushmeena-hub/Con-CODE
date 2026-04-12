@@ -8,7 +8,8 @@ import numpy as np
 import requests
 from datetime import datetime
 
-API_BASE_URL = "http://localhost:8000/api/v1"
+API_BASE_URL  = "http://localhost:8000/api/v1"
+LOGIN_PAGE_URL = "http://localhost:5000/login/teacher"
 
 # ─────────────────────────────────────────────
 # API HELPERS
@@ -19,7 +20,7 @@ def api_get(path: str):
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ConnectionError:
-        st.error("❌ Backend offline — run `python app.py` on port 8000.")
+        st.error("❌ Backend offline — run `python main.py` on port 8000.")
         return None
     except Exception as e:
         st.error(f"API error: {e}")
@@ -31,7 +32,7 @@ def api_post(path: str, payload: dict):
         r.raise_for_status()
         return r.json()
     except requests.exceptions.ConnectionError:
-        st.error("❌ Backend offline — run `python app.py` on port 8000.")
+        st.error("❌ Backend offline — run `python main.py` on port 8000.")
         return None
     except Exception as e:
         st.error(f"API error: {e}")
@@ -183,14 +184,85 @@ div[data-testid="stHorizontalBlock"] div[data-testid="stColumn"]:last-child butt
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# SESSION STATE
+# AUTH GUARD
 # ─────────────────────────────────────────────
+def _check_auth() -> bool:
+    """
+    Reads the JWT from st.query_params (Streamlit passes cookies via
+    query param when redirected from Flask login page) or from session state.
+    Returns True if valid, renders a redirect wall if not.
+    """
+    # Already verified this session
+    if st.session_state.get("authenticated"):
+        return True
+
+    # Check query param ?token=... (set by Flask redirect)
+    token = st.query_params.get("token", "")
+
+    # Also accept token stored in session from a previous verify
+    if not token:
+        token = st.session_state.get("auth_token", "")
+
+    if token:
+        try:
+            r = requests.get(
+                f"{API_BASE_URL}/auth/verify",
+                params={"token": token},
+                timeout=5,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                st.session_state.authenticated = True
+                st.session_state.auth_token    = token
+                st.session_state.auth_username = data["username"]
+                st.session_state.auth_role     = data["role"]
+                # Clean token from URL bar
+                st.query_params.clear()
+                return True
+        except Exception:
+            pass
+
+    # Not authenticated — show redirect wall
+    st.markdown(f"""
+    <style>
+    .stApp {{ background: #09090b; }}
+    .auth-wall {{
+        display: flex; flex-direction: column; align-items: center;
+        justify-content: center; height: 80vh; gap: 20px;
+        font-family: 'Inter', sans-serif;
+    }}
+    .auth-wall h2 {{ color: #fff; font-size: 1.8rem; margin: 0; }}
+    .auth-wall p  {{ color: #94a3b8; margin: 0; }}
+    .auth-btn {{
+        display: inline-block; padding: 12px 32px;
+        background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+        color: white; border-radius: 50px; font-weight: 700;
+        font-size: 1rem; text-decoration: none;
+        box-shadow: 0 5px 15px rgba(37,99,235,0.4);
+        transition: transform 0.2s ease;
+    }}
+    .auth-btn:hover {{ transform: translateY(-3px); }}
+    </style>
+    <div class="auth-wall">
+        <h2>🎓 Faculty Dashboard</h2>
+        <p>You need to log in to access this page.</p>
+        <a class="auth-btn" href="{LOGIN_PAGE_URL}" target="_self">Go to Login →</a>
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
+    return False
+
+
 def _ensure_state():
     defaults = {
-        "profile_open":  False,
-        "students_data": None,
+        "profile_open":   False,
+        "students_data":  None,
         "timetable_data": None,
-        "fac_profile":   None,
+        "fac_profile":    None,
+        "authenticated":  False,
+        "auth_token":     "",
+        "auth_username":  "",
+        "auth_role":      "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -407,6 +479,7 @@ def render_profile_dropdown():
 # ─────────────────────────────────────────────
 def main():
     _ensure_state()
+    _check_auth()          # ← blocks here if not logged in
     fac = _get_faculty()
 
     # Avatar button top-right
@@ -435,6 +508,12 @@ def main():
         st.markdown(f"📆 {datetime.now().strftime('%d %b %Y')}")
         st.markdown("---")
         st.caption(f"🔗 `{API_BASE_URL}`")
+        if st.button("🚪 Logout", use_container_width=True):
+            for key in ["authenticated", "auth_token", "auth_username",
+                        "auth_role", "fac_profile", "students_data", "timetable_data"]:
+                st.session_state[key] = None if "data" in key or "profile" in key else ""
+            st.session_state.authenticated = False
+            st.rerun()
 
     st.markdown('<div class="page-wrapper">', unsafe_allow_html=True)
     if   "Attendance"     in page: render_attendance_dashboard()

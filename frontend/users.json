@@ -1,10 +1,14 @@
 {
   "drsmith": {
-    "password": "scrypt:32768:8:1$KHaJkMTmw3GPmR9w$d0337fe0802a5327e0627da6a1290292644c291f79833bb2e1eba4bf76dab235746b2329be89cc4fa968913ed082733b38d76afec9ad5104df1970ac6b8e5e02",
+    "password": "pbkdf2:sha256:1000000$UqrqHMiC9pvpJDlj$a083c1c858905b4fe41655e923c51e757d8b92411490627f8950c9325f96b466",
     "role": "teacher"
   },
   "test1": {
-    "password": "scrypt:32768:8:1$TyrftnMvHnbpxcUS$e93771588469664885089b2bbbf63adc0e9b1d88a6dd135ddc151ae65fad6b94b4b933814299587e7d6ad05ff5db9c1186541c2c60bba14bff342bf82bb7fe98",
+    "password": "pbkdf2:sha256:1000000$eo7OYGFOlIQfoiHy$157b5a4aa0b7711afb1446e421405a40d60f191f18888da9c71f38d353a93366",
     "role": "teacher"
+  },
+  "student1": {
+    "password": "pbkdf2:sha256:1000000$fc2A5BhSuGYeothz$6976db829f30d1fb3cb01f83e569c31efd559cc25da69c0d6c76ff8960eebf17",
+    "role": "student"
   }
 }

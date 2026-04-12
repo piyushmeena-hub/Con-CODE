@@ -1,30 +1,27 @@
 from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime
-from models import AttendanceStatus
+from enum import Enum
 
-# Add this at the top with your other imports
-class UserCreate(BaseModel):
-    username: str
-    password: str
-    role: str
+class AttendanceStatus(str, Enum):
+    ATTENDED = "ATTENDED"
+    MISSED = "MISSED"
+    OFF = "OFF"
+    CLEAR = "CLEAR"
 
-class UserLogin(BaseModel):
-    username: str
-    password: str
-    role: str
+class MarkAttendanceRequest(BaseModel):
+    subject: str
+    date: str
+    status: AttendanceStatus
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    face_image_path: Optional[str] = None
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-# --- Responses ---
 class ProofResponse(BaseModel):
     latitude: float
     longitude: float
-    accuracy: float
-    address: str
-    photo_url: str
-    timestamp: datetime
+    distance_m: float
+    face_image_path: str
+    timestamp: str
 
     class Config:
         from_attributes = True
@@ -38,14 +35,11 @@ class AttendanceResponse(BaseModel):
 
     class Config:
         from_attributes = True
-<<<<<<< HEAD
 
 class VerifyFaceResponse(BaseModel):
     match: bool
     message: str
 
-=======
->>>>>>> 36ed83e833aa2a501a5fa6f307d02166683aba0d
 class TaskSchema(BaseModel):
     id: str
     text: str
@@ -57,3 +51,17 @@ class SessionSchema(BaseModel):
     start_time: str
     end_time: str
     duration: str
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+    role: str

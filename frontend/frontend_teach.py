@@ -41,12 +41,7 @@ def api_post(path: str, payload: dict):
 # ─────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────
-st.set_page_config(
-    page_title="Faculty Dashboard",
-    page_icon="🎓",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# Page config removed. Now handled globally by app.py
 
 # ─────────────────────────────────────────────
 # CSS
@@ -188,49 +183,12 @@ div[data-testid="stHorizontalBlock"] div[data-testid="stColumn"]:last-child butt
 # ─────────────────────────────────────────────
 def _check_auth() -> bool:
     """
-    Reads ?user= and ?role= set by the Flask login redirect.
-    Stores them in session state so subsequent reruns don't need the params.
-    Shows a login wall if neither is present.
+    Rely entirely on app.py which sets st.session_state.authenticated = True
     """
     if st.session_state.get("authenticated"):
         return True
-
-    # Pick up query params on first load after redirect
-    user = st.query_params.get("user", "")
-    role = st.query_params.get("role", "")
-
-    if user and role:
-        st.session_state.authenticated  = True
-        st.session_state.auth_username  = user
-        st.session_state.auth_role      = role
-        st.query_params.clear()
-        return True
-
-    # Not authenticated — show redirect wall
-    st.markdown(f"""
-    <style>
-    .stApp {{ background: #09090b; }}
-    .auth-wall {{
-        display: flex; flex-direction: column; align-items: center;
-        justify-content: center; height: 80vh; gap: 20px;
-        font-family: 'Inter', sans-serif;
-    }}
-    .auth-wall h2 {{ color: #fff; font-size: 1.8rem; margin: 0; }}
-    .auth-wall p  {{ color: #94a3b8; margin: 0; }}
-    .auth-btn {{
-        display: inline-block; padding: 12px 32px;
-        background: linear-gradient(135deg, #3b82f6, #1d4ed8);
-        color: white; border-radius: 50px; font-weight: 700;
-        font-size: 1rem; text-decoration: none;
-        box-shadow: 0 5px 15px rgba(37,99,235,0.4);
-    }}
-    </style>
-    <div class="auth-wall">
-        <h2>🎓 Faculty Dashboard</h2>
-        <p>Please log in to continue.</p>
-        <a class="auth-btn" href="{LOGIN_PAGE_URL}" target="_self">Go to Login →</a>
-    </div>
-    """, unsafe_allow_html=True)
+    
+    st.error("Please run `streamlit run app.py` to access the portal.")
     st.stop()
     return False
 
